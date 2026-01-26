@@ -1,0 +1,11 @@
+Code,Description
+00,"No wind finding"
+02,"Radiotheodolite (2.4 GHz)"
+03,"Radiotheodolite (403 MHz)"
+07,"Radar (10 cm)"
+08,"Radar (5 cm)"
+13,"Loran-C"
+14,"Argos Doppler"
+19,"GPS"
+20,"VLF-Omega"
+/,"Missing"

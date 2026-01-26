@@ -1,0 +1,6 @@
+Code,Description
+1,"Wind in m/s (anemometer)"
+3,"Wind in knots (anemometer)"
+6,"Wind in m/s (not anemometer)"
+8,"Wind in knots (not anemometer)"
+/,"Wind missing"

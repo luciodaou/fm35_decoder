@@ -1,0 +1,12 @@
+Code,Description
+0,"No CM clouds"
+1,"Altostratus translucidus"
+2,"Altostratus opacus or Nimbostratus"
+3,"Altocumulus translucidus at a single level"
+4,"Patches of Altocumulus translucidus (lenticular)"
+5,"Altocumulus translucidus in bands (invading sky)"
+6,"Altocumulus cumulogenitus"
+7,"Altocumulus translucidus or opacus in two or more layers"
+8,"Altocumulus castellanus or floccus"
+9,"Altocumulus of a chaotic sky (usually at several levels)"
+/,"CM clouds invisible"

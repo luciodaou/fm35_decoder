@@ -1,0 +1,12 @@
+Code,Description
+0,"No CH clouds"
+1,"Cirrus fibratus (uncinus)"
+2,"Cirrus spissatus (dense)"
+3,"Cirrus spissatus cumulonimbogenitus"
+4,"Cirrus uncinus or fibratus (invading sky)"
+5,"Cirrus and Cirrostratus (invading, < 45 deg)"
+6,"Cirrus and Cirrostratus (invading, > 45 deg)"
+7,"Cirrostratus covering the whole sky"
+8,"Cirrostratus not covering the whole sky and not invading"
+9,"Cirrocumulus alone, or with Cirrus/Cirrostratus"
+/,"CH clouds invisible"

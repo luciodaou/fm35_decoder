@@ -1,0 +1,12 @@
+Code,Description
+0,"No clouds"
+1,"1 okta or less, but not zero"
+2,"2 oktas"
+3,"3 oktas"
+4,"4 oktas"
+5,"5 oktas"
+6,"6 oktas"
+7,"7 oktas or more, but not 8 oktas"
+8,"8 oktas"
+9,"Sky obscured, or cloud amount cannot be estimated"
+/,"No measurement made"

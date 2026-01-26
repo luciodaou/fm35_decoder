@@ -1,0 +1,12 @@
+Code,Description
+0,"No CL clouds"
+1,"Cumulus humilis or Cumulus fractus other than of bad weather, or both"
+2,"Cumulus mediocris or congestus, with or without Cumulus of species in code 1"
+3,"Cumulonimbus calvus, with or without Cumulus, Stratocumulus or Stratus"
+4,"Stratocumulus cumulogenitus"
+5,"Stratocumulus other than cumulogenitus"
+6,"Stratus nebulosus or Stratus fractus other than of bad weather, or both"
+7,"Stratus fractus or Cumulus fractus of bad weather, or both"
+8,"Cumulus and Stratocumulus other than cumulogenitus, with bases at different levels"
+9,"Cumulonimbus capillatus, with or without Cumulonimbus calvus, Cumulus, Stratocumulus, Stratus"
+/,"CL clouds invisible owing to darkness, fog, blowing dust or sand, or other similar phenomena"
