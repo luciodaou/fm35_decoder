@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
-# Reference data
+# Folders
 Reference/
+Test Data/
+Debug/
+

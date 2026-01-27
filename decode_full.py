@@ -1,31 +1,51 @@
 import re
 import os
 import pandas as pd
+import numpy as np
 
 # --- Decoding Helper Functions ---
 
 
-def decode_temperature(ttt_str):
+def decode_temperature(ttt_str, tables=None):
     """
     Decodes the TTT part (TaTaTa).
-    Sign Rule: If the last digit is odd, the temperature is negative.
+    Uses WMO Code Table 3931 for tenths and sign.
     Returns temperature in Celsius.
     """
     if not ttt_str or len(ttt_str) != 3:
         return None
     try:
         tt = int(ttt_str[:2])
-        ta = int(ttt_str[2])
-        temp_abs = tt + (ta / 10.0)
-        return -temp_abs if ta % 2 != 0 else temp_abs
+        ta_code = ttt_str[2]  # Code for tenths/sign (as string)
+
+        if not tables or "T_3931" not in tables:
+            # Fallback to old logic if table not loaded
+            ta = int(ta_code)
+            temp_abs = tt + (ta / 10.0)
+            return -temp_abs if ta % 2 != 0 else temp_abs
+
+        t_table = tables.get("T_3931", {})
+        entry = t_table.get(ta_code)
+
+        if entry:
+            sign = entry.get("Sign", "+")
+            tenths = float(entry.get("TenthsValue", 0.0))
+
+            # TenthsValue in CSV is signed (e.g., -0.2), or use sign column
+            # Logic: Temp = Sign * (TT + Tenths)
+
+            val = float(tt) + abs(tenths)
+            return -val if sign == "-" else val
+
+        return None
     except ValueError:
         return None
 
 
-def decode_dewpoint_depression(dd_str):
+def decode_dewpoint_depression(dd_str, tables=None):
     """
     Decodes the DD part (Dew Point Depression).
-    00-50: tenths of degrees. 56-99: DD-50 degrees.
+    Uses WMO Code Table 0777.
     Returns depression in Celsius.
     """
     if not dd_str or len(dd_str) != 2:
@@ -33,6 +53,17 @@ def decode_dewpoint_depression(dd_str):
     try:
         if dd_str == "//":
             return None
+
+        if tables and "D_0777" in tables:
+            d_table = tables.get("D_0777", {})
+            entry = d_table.get(dd_str)
+            if entry:
+                val = entry.get("Value")
+                if pd.isna(val) or val == "":
+                    return None
+                return float(val)
+
+        # Fallback
         dd = int(dd_str)
         if dd <= 50:
             return dd / 10.0
@@ -43,19 +74,43 @@ def decode_dewpoint_depression(dd_str):
         return None
 
 
-def decode_wind(dddff_str):
+def decode_wind(dff_str):
     """
-    Decodes the dddff group (3 digits direction, 2 digits speed).
-    Returns (direction, speed).
+    Decodes wind group in WMO format (ddfff).
+    dd: Direction in tens of degrees.
+    fff: Speed + (units digit of direction) * 100.
+
+    Rule:
+    1. Extract fff.
+    2. If fff >= 500:
+       Direction ends in 5.
+       Speed = fff - 500.
+    3. If fff < 500:
+       Direction ends in 0.
+       Speed = fff.
+
+    Direction = dd * 10 + (5|0).
     """
-    if not dddff_str or len(dddff_str) != 5:
+    if not dff_str or len(dff_str) != 5:
         return None, None
     try:
-        if "/////" in dddff_str:
+        if "/////" in dff_str:
             return None, None
-        ddd = int(dddff_str[:3])
-        ff = int(dddff_str[3:])
-        return ddd, ff
+
+        dd = int(dff_str[:2])
+        fff = int(dff_str[2:])
+
+        direction_unit = 0
+        speed = fff
+
+        if fff >= 500:
+            direction_unit = 5
+            speed = fff - 500
+
+        direction = dd * 10 + direction_unit
+
+        # Determine strict WMO speed unit? Usually knots for upper air.
+        return direction, speed
     except ValueError:
         return None, None
 
@@ -77,6 +132,8 @@ def load_wmo_tables(base_path):
         "Sr": "Sr_3849.csv",
         "rara": "rara_3685.csv",
         "sasa": "sasa_3872.csv",
+        "T_3931": "T_3931.csv",
+        "D_0777": "D_0777.csv",
     }
 
     try:
@@ -89,7 +146,15 @@ def load_wmo_tables(base_path):
             if os.path.exists(path):
                 try:
                     df_code = pd.read_csv(path, dtype=str)
-                    codes[key] = df_code.set_index("Code")["Description"].to_dict()
+                    if "Code" in df_code.columns:
+                        if key in ["T_3931", "D_0777"]:
+                            codes[key] = df_code.set_index("Code").to_dict(
+                                orient="index"
+                            )
+                        else:
+                            codes[key] = df_code.set_index("Code")[
+                                "Description"
+                            ].to_dict()
                 except Exception:
                     codes[key] = {}
             else:
@@ -97,6 +162,273 @@ def load_wmo_tables(base_path):
     except Exception:
         return None
     return codes
+
+
+def interpolate_data(df):
+    """
+    Interpolates missing Temperature, DewPoint, and Wind data vertically.
+    - Temperature/DewPoint: Linear interpolation in Log-Pressure.
+    - Wind: Vector interpolation (U/V components) in Log-Pressure.
+    """
+    if df.empty or "Pressure" not in df.columns:
+        return df
+
+    # Work on a copy to avoid side effects
+    df = df.copy()
+
+    # Ensure sorted by Pressure Descending (Surface -> Top)
+    # But for interpolation, monotonic increasing or decreasing index is needed.
+    # Log(P) is monotonic.
+    df = df.sort_values("Pressure", ascending=False).reset_index(drop=True)
+
+    # Calculate Log-Pressure (Natural Log)
+    # Avoid log(0)
+    df["log_p"] = np.log(df["Pressure"].replace(0, np.nan))
+
+    # set index to log_p for interpolation
+    # Note: log_p is descending (Surface=high P, Top=low P).
+    # interpolate() works on index.
+    df = df.set_index("log_p")
+
+    # --- Temperature Interpolation ---
+    # Linear interpolation in Log-P space
+    cols_to_interp = ["Temp", "DewPoint"]
+    for col in cols_to_interp:
+        if col in df.columns:
+            # Mask for original NaNs to round only them (optional, but cleaner)
+            mask = df[col].isna()
+            df[col] = df[col].interpolate(method="index")
+            df.loc[mask, col] = df.loc[mask, col].round(1)
+
+    # --- Wind Interpolation (Vector) ---
+    if "WindSpeed" in df.columns and "WindDir" in df.columns:
+        # Convert to U (Zonal) and V (Meridional)
+        # meteo dir: 0/360=North, 90=East.
+        # math dir: 0=East, 90=North.
+        # u = -speed * sin(dir)
+        # v = -speed * cos(dir)
+        rads = np.radians(df["WindDir"])
+        df["u"] = -df["WindSpeed"] * np.sin(rads)
+        df["v"] = -df["WindSpeed"] * np.cos(rads)
+
+        # Interpolate U and V
+        df["u"] = df["u"].interpolate(method="index")
+        df["v"] = df["v"].interpolate(method="index")
+
+        # Reconstruct Speed and Direction
+        # Speed = sqrt(u^2 + v^2)
+        speed = np.sqrt(df["u"] ** 2 + df["v"] ** 2)
+
+        # Dir = atan2(u, v)? No.
+        # atan2(y, x) -> atan2(v, u)?
+        # To convert back to meteo:
+        # dir = (270 - degrees(atan2(v, u))) % 360
+        degrees = np.degrees(np.arctan2(df["v"], df["u"]))
+        direction = (270 - degrees) % 360
+
+        # Fill missing values in original columns
+        mask = df["WindSpeed"].isna() | df["WindDir"].isna()
+
+        # Assign interpolated values
+        df.loc[mask, "WindSpeed"] = speed[mask].round(1)
+        df.loc[mask, "WindDir"] = direction[mask].round(0)
+
+        # Clean up temporary columns
+        df = df.drop(columns=["u", "v"])
+
+    # Reset index and restore original sorting
+    df = df.reset_index(drop=False)  # log_p becomes column
+    df = df.drop(columns=["log_p"])
+
+    return df
+
+
+def calculate_geopotential(df):
+    """
+    Calculates missing Geopotential Height values using the Hypsometric Equation.
+    Formula: Z2 = Z1 + (R * T_avg / g) * ln(P1 / P2)
+    """
+    if df.empty or "Pressure" not in df.columns or "Temp" not in df.columns:
+        return df
+
+    # Constants
+    R = 287.05  # Specific gas constant for dry air (J/(kg·K))
+    g = 9.80665  # Gravity (m/s^2)
+
+    # Ensure sorted by pressure descending (Surface -> Top)
+    df = df.sort_values("Pressure", ascending=False).reset_index(drop=True)
+
+    # Work with a copy to avoid SettingWithCopy warnings and temporary columns
+    df["Temp_K"] = df["Temp"] + 273.15
+
+    # Interpolate missing temperatures for calculation (linear in log-P would be better, but linear is ok)
+    if df["Temp_K"].isnull().any():
+        df["Temp_K"] = df["Temp_K"].interpolate(method="linear", limit_direction="both")
+
+    # 1. Forward Pass (Surface -> Top): Fill NaNs using valid level below
+    # We iterate manually because each step depends on the potentially calculated prev step
+    for i in range(1, len(df)):
+        if pd.isna(df.at[i, "Height"]) and not pd.isna(df.at[i - 1, "Height"]):
+            try:
+                p1 = df.at[i - 1, "Pressure"]  # Lower altitude (higher P)
+                z1 = df.at[i - 1, "Height"]
+                t1 = df.at[i - 1, "Temp_K"]
+
+                p2 = df.at[i, "Pressure"]  # Higher altitude (lower P)
+                t2 = df.at[i, "Temp_K"]
+
+                if p2 <= 0:
+                    continue  # Avoid log domain error
+
+                avg_t = (t1 + t2) / 2
+                # Hypsometric: Z2 - Z1 = (R * T / g) * ln(P1/P2)
+                dz = (R * avg_t / g) * np.log(p1 / p2)
+
+                df.at[i, "Height"] = round(z1 + dz)
+            except Exception:
+                pass
+
+    # 2. Backward Pass (Top -> Surface): Fill NaNs at bottom using valid level above
+    # Useful if surface height is missing but 1000hPa or 925hPa is known
+    first_valid = df["Height"].first_valid_index()
+    if first_valid is not None and first_valid > 0:
+        for i in range(first_valid - 1, -1, -1):
+            if pd.isna(df.at[i, "Height"]):
+                try:
+                    # p1 is "Upper" level (Lower Pressure, index i+1)
+                    p1 = df.at[i + 1, "Pressure"]
+                    z1 = df.at[i + 1, "Height"]
+                    t1 = df.at[i + 1, "Temp_K"]
+
+                    # p2 is "Target" level (Higher Pressure, index i)
+                    p2 = df.at[i, "Pressure"]
+                    t2 = df.at[i, "Temp_K"]
+
+                    if p1 <= 0:
+                        continue
+
+                    avg_t = (t1 + t2) / 2
+                    # Z_target = Z_upper - DZ
+                    # DZ = (R * T / g) * ln(P_target / P_upper)
+                    dz = (R * avg_t / g) * np.log(p2 / p1)
+
+                    df.at[i, "Height"] = round(z1 - dz)
+                except Exception:
+                    pass
+
+    # 3. WMO Extrapolation Rule 35.2.2.4 (Upward to standard levels)
+    # Check if we can extrapolate to the next standard level above the top
+    standard_levels = [
+        1000,
+        925,
+        850,
+        700,
+        500,
+        400,
+        300,
+        250,
+        200,
+        150,
+        100,
+        70,
+        50,
+        30,
+        20,
+        10,
+    ]
+
+    # Get current top of sounding (lowest pressure with valid Data)
+    # We rely on 'Temp_K' being present (interpolated) and 'Height' being calculated
+    # Find the row with the lowest pressure that has valid Temp and Height
+    valid_df = df.dropna(subset=["Height", "Temp_K"])
+    if not valid_df.empty:
+        top_row = valid_df.iloc[-1]  # Sorted descending by pressure, so last is top
+        p_min = top_row["Pressure"]
+        t_min = top_row["Temp_K"]
+        z_min = top_row["Height"]
+
+        # Identify target standard levels that are slightly above p_min
+        # Filter standard levels < p_min
+        targets = [sl for sl in standard_levels if sl < p_min]
+
+        new_rows = []
+
+        for p_target in targets:
+            delta_p = p_min - p_target
+
+            # Criterion a: Delta P <= 25 hPa AND Delta P <= 0.25 * P_target
+            if delta_p <= 25 and delta_p <= 0.25 * p_target:
+                try:
+                    # Criterion b: Use points at P_min and P_base (P_min + Delta_P)
+                    p_base = p_min + delta_p
+
+                    # Interpolate Temp at p_base from existing profile
+                    # Linear interpolation in log(P) for Temperature
+                    # We need the full profile arrays
+                    all_p = df["Pressure"].values
+                    all_t = df["Temp_K"].values
+
+                    # Sort by P ascending for np.interp (Standard atmosphere decreases P with height,
+                    # but interpolation expects increasing x usually, or handled correctly)
+                    # Let's use log(P)
+                    log_p = np.log(all_p)
+                    log_p_base = np.log(p_base)
+
+                    # Ensure x is increasing for interp
+                    # all_p is currently Descending (1000 -> 100)
+                    # log_p is Descending (6.9 -> 4.6)
+                    # Flip for interpolation
+                    t_base = np.interp(log_p_base, log_p[::-1], all_t[::-1])
+
+                    # Extrapolate T to P_target
+                    # Slope m = (T_min - T_base) / (ln(P_min) - ln(P_base))
+                    # T_target = T_min + m * (ln(P_target) - ln(P_min))
+                    log_p_min = np.log(p_min)
+                    log_p_target = np.log(p_target)
+
+                    # Prevent division by zero if delta_p is tiny (though criteria imply it exists)
+                    if abs(log_p_min - log_p_base) < 1e-6:
+                        t_target = t_min
+                    else:
+                        slope = (t_min - t_base) / (log_p_min - log_p_base)
+                        t_target = t_min + slope * (log_p_target - log_p_min)
+
+                    avg_t = (t_min + t_target) / 2
+
+                    # Hypsometric: Z_target = Z_min + (R * T_avg / g) * ln(P_min / P_target)
+                    dz = (R * avg_t / g) * np.log(p_min / p_target)
+                    z_target = z_min + dz
+
+                    new_rows.append(
+                        {
+                            "Pressure": int(p_target),
+                            "Height": round(z_target),
+                            "Temp": round(t_target - 273.15, 1),
+                            "DewPoint": None,  # Cannot reliably extrapolate moisture
+                            "Source": "Extrapolated",
+                        }
+                    )
+
+                    # Update p_min/z_min for next step?
+                    # Rule says "extrapolate a sounding", implies from the *actual* sounding top.
+                    # So we don't daisy chain. We stop after one or handle independent targets?
+                    # "provided the extrapolation does not extend through a pressure interval exceeding 25 hPa"
+                    # This implies valid only for the immediate vicinity of the sounding top.
+                    # Usually only one standard level fits this tight window.
+
+                except Exception:
+                    pass
+
+        if new_rows:
+            # Append new extrapolated rows
+            df_ext = pd.DataFrame(new_rows)
+            df = pd.concat([df, df_ext], ignore_index=True)
+            df = df.sort_values("Pressure", ascending=False).reset_index(drop=True)
+
+    # Drop temp column
+    df.drop(columns=["Temp_K"], inplace=True)
+
+    return df
 
 
 def decode_cloud_group(group, tables):
@@ -262,7 +594,7 @@ def decode_height(pressure, h_str):
     }
 
     # 1. Determine Scale
-    if pressure < 500:
+    if pressure <= 500:
         val = val_raw * 10
         step = 10000
     else:
@@ -368,7 +700,6 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
                 wind_grp = groups[i + 2] if i + 2 < len(groups) else None
 
                 t, d, wd, ws = None, None, None, None
-                valid_t = False
 
                 special_data.append(
                     {
@@ -380,8 +711,8 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
                 )
 
                 if temp_grp:
-                    t = decode_temperature(temp_grp[:3])
-                    d = decode_dewpoint_depression(temp_grp[3:])
+                    t = decode_temperature(temp_grp[:3], tables=cloud_tables)
+                    d = decode_dewpoint_depression(temp_grp[3:], tables=cloud_tables)
                     if t is not None:
                         special_data.append(
                             {
@@ -391,7 +722,6 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
                                 "Value": f"{t}C",
                             }
                         )
-                        valid_t = True
                     if t is not None and d is not None:
                         dw = calculate_dewpoint(t, d)
                         special_data.append(
@@ -529,14 +859,14 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
             if pp == "99":
                 try:
                     pressure = 1000 + int(g[2:]) if int(g[2:]) < 100 else int(g[2:])
-                except:
+                except (ValueError, TypeError):
                     pass
             elif pp in standard_levels and len(g) == 5:
                 try:
                     pressure = standard_levels[pp]
                     h_code = g[2:]
                     height = decode_height(pressure, h_code)
-                except:
+                except (ValueError, TypeError, Exception):
                     pass
 
             if pressure is not None:
@@ -548,8 +878,8 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
 
                 valid = False
                 if t_group and len(t_group) == 5:
-                    t = decode_temperature(t_group[:3])
-                    d = decode_dewpoint_depression(t_group[3:])
+                    t = decode_temperature(t_group[:3], tables=cloud_tables)
+                    d = decode_dewpoint_depression(t_group[3:], tables=cloud_tables)
                     dp["Temp"] = t
                     dp["DewPoint"] = calculate_dewpoint(t, d)
                     valid = True
@@ -573,10 +903,19 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
     clean_msg = clean_message(message)
     groups = clean_msg.split(" ")
     mode = "TEMP"
+    is_ttdd = "TTDD" in message  # Simple check, or track via group iteration
+    last_nn = None  # Sequence tracking for intruder detection
+
     i = 0
     while i < len(groups):
         g = groups[i]
+
         if re.match(r"^(TTBB|TTDD)$", g):
+            if g == "TTDD":
+                is_ttdd = True
+            elif g == "TTBB":
+                is_ttdd = False
+
             i += 1
             if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
                 i += 1
@@ -585,6 +924,7 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
             continue
         if g == "21212":
             mode = "WIND"
+            last_nn = None  # Reset sequence counter for new section
             i += 1
             continue
 
@@ -609,6 +949,50 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
 
         if len(g) == 5 and g[:2].isdigit():
             nn = g[:2]
+
+            # --- Strict Sequence Validation ---
+            is_valid_level = False
+
+            if last_nn is None:
+                # Restrict start to 00 or 11 to filter out header noise
+                try:
+                    n_val = int(nn)
+                    if n_val == 0 or n_val == 11:
+                        is_valid_level = True
+                    else:
+                        pass
+                except (ValueError, IndexError):
+                    pass
+            else:
+                try:
+                    ln = int(last_nn)
+                    # strict next step
+                    if ln == 0:
+                        exp = 11
+                    elif ln == 99:
+                        exp = 11
+                    else:
+                        exp = ln + 11
+
+                    try:
+                        n_val = int(nn)
+                        if n_val == exp:
+                            is_valid_level = True
+                        else:
+                            pass
+                    except (ValueError, IndexError):
+                        pass
+                except (ValueError, IndexError):
+                    pass
+
+            if not is_valid_level:
+                # Treat as intruder/noise.
+                i += 1
+                continue
+
+            last_nn = nn
+            # ----------------------------------
+
             try:
                 ppp_part = int(g[2:])
                 pressure = None
@@ -617,11 +1001,15 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
                 else:
                     pressure = float(ppp_part)
 
+                # If TTDD, pressure is in tenths of hPa
+                if is_ttdd:
+                    pressure = pressure / 10.0
+
                 if mode == "TEMP":
                     t_group = groups[i + 1] if i + 1 < len(groups) else None
-                    if t_group and len(t_group) == 5:
-                        t = decode_temperature(t_group[:3])
-                        d = decode_dewpoint_depression(t_group[3:])
+                    if t_group and len(t_group) == 5 and t_group != "21212":
+                        t = decode_temperature(t_group[:3], tables=cloud_tables)
+                        d = decode_dewpoint_depression(t_group[3:], tables=cloud_tables)
                         levels_data.append(
                             {
                                 "Pressure": float(pressure),
@@ -646,7 +1034,7 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
                         )
                         i += 2
                         continue
-            except:
+            except (ValueError, IndexError):
                 pass
         i += 1
     return levels_data, special_data
@@ -707,14 +1095,16 @@ def decode_full(ttaa_msg, ttbb_msg, ttcc_msg, ttdd_msg):
                 special_frames.append(pd.DataFrame(spcls))
 
     df_main = merge_data(data_frames)
+    df_main = interpolate_data(df_main)
+    df_main = calculate_geopotential(df_main)
     df_special = (
         pd.concat(special_frames, ignore_index=True)
         if special_frames
         else pd.DataFrame()
     )
 
-    if not df_main.empty:
-        df_main = df_main.dropna(subset=["Temp", "DewPoint"])
+    # Validating data: We should keep rows that have EITHER Temp OR Wind
+    pass
     if not df_special.empty:
         # Reorder columns as requested
         if set(["Symbol", "Subject", "Description", "Value"]).issubset(
@@ -729,16 +1119,19 @@ def decode_full(ttaa_msg, ttbb_msg, ttcc_msg, ttdd_msg):
 
 
 if __name__ == "__main__":
-    ttaa_demo = "TTAA 73001 83779 99937 21626 17006 00151 ///// ///// 92834 20823 14509 85560 16203 07511 70196 08642 19506 50590 07157 26501 40761 16965 27015 30970 33368 24518 25095 44360 28026 20241 55558 29522 15419 66963 27538 10657 72366 31021 88110 75362 30027 77999 31313 42308 82336="
-    ttbb_demo = "TTBB 73008 83779 00937 21626 11845 15804 22696 08640 33657 05446 44578 01508 55554 01947 66530 03756 77507 06745 88466 09164 99430 13357 11381 19570 22360 22968 33338 27127 44322 29928 55309 31370 66254 43550 77248 44764 88246 45159 99231 48568 11196 56557 22189 58363 33185 59157 44176 61162 55162 65758 66117 74362 77110 75362 88101 72965 21212 00937 17006 11895 11512 22839 07012 33828 09010 44562 18001 55402 27015 66342 25521 77326 26016 88296 24019 99277 26519 11263 25020 22248 28026 33212 30523 44191 28529 55178 30530 66163 29537 77153 27539 88134 29032 99126 27027 11119 30022 22106 29521 33101 31021 31313 42308 82336 41414 45501="
-    ttcc_demo = "TTCC 73003 83779 70866 74966 28509 50066 67374 08522 30380 61181 09031 88999 77999 31313 42308 82336="
-    ttdd_demo = "TTDD 7300/ 83779 11704 75365 22612 69171 33562 70370 44441 63778 55280 59383 21212 11972 28026 22926 28531 33810 24510 44789 29004 55748 31512 66721 29017 77704 27513 88678 26504 99652 17011 11627 12019 22605 08517 33569 08012 44555 10009 55542 13513 66511 09022 77476 07014 88458 08507 99435 12012 11415 07013 22400 10014 33382 07514 44368 09523 55345 08514 66328 10021 77295 09534 88280 10525 31313 42308 82336="
+    ttaa = "TTAA 73121 83779 99938 21224 01008 00163 ///// ///// 92843 20019 07506 85570 18650 36008 70207 08030 34004 50591 06563 29503 40761 18364 30017 30970 33138 28015 25095 43722 28026 20241 55957 29040 15418 68957 28039 10658 73364 28019 88999 77999 31313 42308 81131="
+    ttbb = "TTBB 73128 83779 00938 21224 11882 16804 22870 19856 33735 11056 44712 08616 55615 01218 66569 01530 77540 03758 88531 04546 99524 04761 11520 05356 22479 08370 33476 08760 44467 09360 55450 11557 66446 11761 77421 15358 88410 16765 99387 19967 11355 24948 22349 25758 33340 27122 44322 30106 55302 32738 66279 37340 77228 49110 88223 50528 99210 53558 11190 58550 22154 68556 33137 67964 44123 73356 55117 73560 66107 71366 77101 73164 21212 00938 01008 11870 01510 22524 00000 33453 29010 44425 31510 55359 29525 66305 27014 77296 30018 88247 28030 99200 29040 11157 27546 22150 28037 33140 25529 44128 27515 55106 26024 66101 28019 31313 42308 81131 41414 86500="
+    ttcc = "TTCC 73123 83779 70865 71568 15020 50064 67574 12519 30380 58383 08535 88906 77162 26018 77999 31313 42308 81131="
+    ttdd = "TTDD 7312/ 83779 11906 77162 22585 70370 33542 70970 44445 63978 55283 57785 21212 11935 25516 22896 26516 33868 29513 44832 28520 55774 25010 66742 19017 77632 05515 88618 07010 99605 12508 11592 17011 22572 16516 33537 09517 44526 09516 55500 13017 66475 10532 77421 10524 88376 11025 99357 09535 11330 09537 22308 08527 33289 08544 44283 09041 31313 42308 81131="
 
-    df, df2 = decode_full(ttaa_demo, ttbb_demo, ttcc_demo, ttdd_demo)
+    df, df2 = decode_full(ttaa, ttbb, ttcc, ttdd)
 
     # df2 Sorting
     mask = df2["Subject"] == "Cloud"
-    df2.loc[mask] = df2.loc[mask].sort_values("Description").values
+    order = {"h": 0, "Nh": 1, "CL": 2, "CM": 3, "CH": 4}
+    df2.loc[mask] = (
+        df2.loc[mask].sort_values(by="Symbol", key=lambda col: col.map(order)).values
+    )
 
     print("\n=== Main Level DataFrame (df) ===")
     # Omit Source column
