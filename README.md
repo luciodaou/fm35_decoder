@@ -1,8 +1,8 @@
 # FM35 Decoder
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-F16061?style=flat&logo=ko-fi&logoColor=white)](https://ko-fi.com/luciodaou)
-[![PyPI - Version](https://img.shields.io/pypi/v/fm35-decoder.svg)](https://pypi.org/project/fm35-decoder)
-[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fm35-decoder.svg)](https://pypi.org/project/fm35-decoder)
+[![PyPI - Version](https://img.shields.io/pypi/v/fm35_decoder.svg)](https://pypi.org/project/fm35_decoder)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fm35_decoder.svg)](https://pypi.org/project/fm35_decoder)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
