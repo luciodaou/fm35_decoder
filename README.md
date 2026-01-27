@@ -1,45 +1,33 @@
-# TTAA Decoder
+# FM35 Decoder
 
-A lightweight Python tool to decode standard TTAA weather messages (Upper-air observations).
+A lightweight Python tool to decode standard FM35 TEMP weather messages from upper-air observations (radiosoundings).
 
 ## Installation
 
-This project uses [`uv`](https://github.com/astral-sh/uv) for dependency management.
+Install the package directly from the repository:
 
 ```bash
-uv sync
+pip install .
 ```
 
-Or install dependencies manually via pip:
+Or for development (editable mode):
 
 ```bash
-pip install pandas
+pip install -e .
 ```
 
 ## Usage
 
-### 1. From File
-Pass a text file containing the TTAA message:
-```bash
-python decode_ttaa.py path/to/message.txt
-```
+Import the decoder into your project and call the `decode` function:
 
-### 2. Direct String Input
-Pass the message directly as a command-line argument:
-```bash
-python decode_ttaa.py "TTAA 73121 82332 99008 26652 06005 00139 26257 05508 ..."
-```
+```python
+from fm35_decoder import decode
 
-### 3. Interactive Mode
-Run without arguments and paste the message when prompted:
-```bash
-python decode_ttaa.py
+# Your FM35/TEMP message parts
+ttaa = "..."
+# ...
+df_main, df_special = decode(ttaa, ttbb, ttcc, ttdd)
 ```
-
-## Output
-The script prints a clean DataFrame table containing:
-- Pressure (hPa)
-- Air Temperature (°C)
-- Dew Temperature (°C)
-- Wind Direction (°)
-- Wind Speed (kt)
+# df_main: Standard levels, interpolated data and geopotential heights
+# df_special: Tropopause, Max Wind, and Cloud groups
+print(df_main)

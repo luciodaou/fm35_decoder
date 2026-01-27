@@ -10,7 +10,8 @@ wheels/
 .venv
 
 # Folders
-Reference/
-Test Data/
-Debug/
+lib
+Test
+Test Data
+Debug
 

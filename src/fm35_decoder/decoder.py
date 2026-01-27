@@ -2,6 +2,7 @@ import re
 import os
 import pandas as pd
 import numpy as np
+from importlib import resources
 
 # --- Decoding Helper Functions ---
 
@@ -100,6 +101,10 @@ def decode_wind(dff_str):
         dd = int(dff_str[:2])
         fff = int(dff_str[2:])
 
+        # Direction Range Validation: 00-36 or 99 (Variable)
+        if not (0 <= dd <= 36 or dd == 99):
+            return None, None
+
         direction_unit = 0
         speed = fff
 
@@ -121,7 +126,7 @@ def calculate_dewpoint(temp, depression):
     return None
 
 
-def load_wmo_tables(base_path):
+def load_wmo_tables(base_path=None):
     codes = {}
     tables = {
         "Nh": "Nh_2700.csv",
@@ -137,9 +142,32 @@ def load_wmo_tables(base_path):
     }
 
     try:
-        table_dir = os.path.join(base_path, "Table Codes")
+        # standard way to access package data
+        with resources.path("fm35_decoder.table_codes", "") as table_dir:
+            for key, filename in tables.items():
+                path = os.path.join(table_dir, filename)
+                if os.path.exists(path):
+                    try:
+                        df_code = pd.read_csv(path, dtype=str)
+                        if "Code" in df_code.columns:
+                            if key in ["T_3931", "D_0777"]:
+                                codes[key] = df_code.set_index("Code").to_dict(
+                                    orient="index"
+                                )
+                            else:
+                                codes[key] = df_code.set_index("Code")[
+                                    "Description"
+                                ].to_dict()
+                    except Exception:
+                        codes[key] = {}
+                else:
+                    codes[key] = {}
+    except Exception:
+        # Fallback for local development if not installed as a package
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        table_dir = os.path.join(current_dir, "table_codes")
         if not os.path.exists(table_dir):
-            table_dir = os.path.join(os.getcwd(), "Table Codes")
+            return None
 
         for key, filename in tables.items():
             path = os.path.join(table_dir, filename)
@@ -159,8 +187,6 @@ def load_wmo_tables(base_path):
                     codes[key] = {}
             else:
                 codes[key] = {}
-    except Exception:
-        return None
     return codes
 
 
@@ -195,6 +221,8 @@ def interpolate_data(df):
     cols_to_interp = ["Temp", "DewPoint"]
     for col in cols_to_interp:
         if col in df.columns:
+            # Ensure numeric to avoid TypeError: Series cannot interpolate with object dtype
+            df[col] = pd.to_numeric(df[col], errors="coerce")
             # Mask for original NaNs to round only them (optional, but cleaner)
             mask = df[col].isna()
             df[col] = df[col].interpolate(method="index")
@@ -202,6 +230,10 @@ def interpolate_data(df):
 
     # --- Wind Interpolation (Vector) ---
     if "WindSpeed" in df.columns and "WindDir" in df.columns:
+        # Ensure numeric
+        df["WindSpeed"] = pd.to_numeric(df["WindSpeed"], errors="coerce")
+        df["WindDir"] = pd.to_numeric(df["WindDir"], errors="coerce")
+
         # Convert to U (Zonal) and V (Meridional)
         # meteo dir: 0/360=North, 90=East.
         # math dir: 0=East, 90=North.
@@ -259,7 +291,9 @@ def calculate_geopotential(df):
     df = df.sort_values("Pressure", ascending=False).reset_index(drop=True)
 
     # Work with a copy to avoid SettingWithCopy warnings and temporary columns
-    df["Temp_K"] = df["Temp"] + 273.15
+    # Ensure Temp is numeric
+    temp_numeric = pd.to_numeric(df["Temp"], errors="coerce")
+    df["Temp_K"] = temp_numeric + 273.15
 
     # Interpolate missing temperatures for calculation (linear in log-P would be better, but linear is ok)
     if df["Temp_K"].isnull().any():
@@ -877,13 +911,22 @@ def parse_ttaa_ttcc(message, cloud_tables=None):
                     dp["Height"] = height
 
                 valid = False
-                if t_group and len(t_group) == 5:
+                indicators = ("88", "77", "66", "51515", "31313", "41414")
+                if (
+                    t_group
+                    and len(t_group) == 5
+                    and not t_group.startswith(indicators)
+                ):
                     t = decode_temperature(t_group[:3], tables=cloud_tables)
                     d = decode_dewpoint_depression(t_group[3:], tables=cloud_tables)
                     dp["Temp"] = t
                     dp["DewPoint"] = calculate_dewpoint(t, d)
                     valid = True
-                if w_group and len(w_group) == 5:
+                if (
+                    w_group
+                    and len(w_group) == 5
+                    and not w_group.startswith(indicators)
+                ):
                     wd, ws = decode_wind(w_group)
                     dp["WindDir"] = wd
                     dp["WindSpeed"] = ws
@@ -1071,12 +1114,7 @@ def merge_data(df_list):
 
 
 def decode_full(ttaa_msg, ttbb_msg, ttcc_msg, ttdd_msg):
-    base_dir = (
-        os.path.dirname(os.path.abspath(__file__))
-        if "__file__" in globals()
-        else os.getcwd()
-    )
-    cloud_tables = load_wmo_tables(base_dir)
+    cloud_tables = load_wmo_tables()
 
     data_frames = []
     special_frames = []
