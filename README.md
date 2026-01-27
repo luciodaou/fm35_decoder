@@ -33,12 +33,14 @@ df_main, df_special = decode(ttaa, ttbb, ttcc, ttdd)
 print(df_main)
 print(df_special)
 ```
-## Important Information
-### Interpolation
+## Interpolation Methodology
 
+**Temperature and Dewpoint**: Missing values are filled using linear interpolation with respect to the natural logarithm of pressure. This method aligns with standard atmospheric thermodynamics (Skew-T/Log-P diagrams), where temperature typically varies linearly with log-pressure, ensuring physically realistic profiles.
 
-### AI usage
-Google's Gemini 3 Pro and Flash were used to assist in the development of this package, based on the FM35/TEMP documentation.
+**Wind**: Wind speed and direction are decomposed into U (zonal) and V (meridional) vector components. Each component is interpolated independently with respect to the natural logarithm of pressure before being recombined. This vector-based approach prevents artifacts that can occur when interpolating speed and direction scalar values directly (e.g., across the 0°/360° north boundary).
+
+## AI usage
+Google's Gemini 3 Pro and Flash were utilized to assist the development of this package, based on the FM35/TEMP documentation.
 
 ## Example
 ### df_main
@@ -77,13 +79,7 @@ Google's Gemini 3 Pro and Flash were used to assist in the development of this p
 dtdtftft Tropopause            Wind                                     260/18kt
 ```
 
-```
 
-## Interpolation Methodology
-
-**Temperature and Dewpoint**: Missing values are filled using linear interpolation with respect to the natural logarithm of pressure. This method aligns with standard atmospheric thermodynamics (Skew-T/Log-P diagrams), where temperature typically varies linearly with log-pressure, ensuring physically realistic profiles.
-
-**Wind**: Wind speed and direction are decomposed into U (zonal) and V (meridional) vector components. Each component is interpolated independently with respect to the natural logarithm of pressure before being recombined. This vector-based approach prevents artifacts that can occur when interpolating speed and direction scalar values directly (e.g., across the 0°/360° north boundary).
 
 ## License
 
