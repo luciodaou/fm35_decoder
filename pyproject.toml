@@ -1,7 +1,7 @@
 [project]
 name = "fm35_decoder"
 version = "0.1.1"
-description = "A lightweight Python tool to decode standard FM35 TEMP weather messages from upper-air observations."
+description = "A Python tool to decode standard FM35 TEMP weather messages from upper-air observations."
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
