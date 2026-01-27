@@ -33,6 +33,12 @@ df_main, df_special = decode(ttaa, ttbb, ttcc, ttdd)
 print(df_main)
 print(df_special)
 ```
+## Important Information
+### Interpolation
+
+
+### AI usage
+Google's Gemini 3 Pro and Flash were used to assist in the development of this package, based on the FM35/TEMP documentation.
 
 ## Example
 ### df_main
@@ -70,6 +76,14 @@ print(df_special)
     DtDt Tropopause        Dewpoint                                       -89.1C
 dtdtftft Tropopause            Wind                                     260/18kt
 ```
+
+```
+
+## Interpolation Methodology
+
+**Temperature and Dewpoint**: Missing values are filled using linear interpolation with respect to the natural logarithm of pressure. This method aligns with standard atmospheric thermodynamics (Skew-T/Log-P diagrams), where temperature typically varies linearly with log-pressure, ensuring physically realistic profiles.
+
+**Wind**: Wind speed and direction are decomposed into U (zonal) and V (meridional) vector components. Each component is interpolated independently with respect to the natural logarithm of pressure before being recombined. This vector-based approach prevents artifacts that can occur when interpolating speed and direction scalar values directly (e.g., across the 0°/360° north boundary).
 
 ## License
 
