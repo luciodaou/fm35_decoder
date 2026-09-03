@@ -1,0 +1,9 @@
+{
+    "github-actions.remote-name": "main",
+    "githubPullRequests.remotes": [
+        "origin",
+        "upstream",
+        "main",
+        "dev"
+    ]
+}
