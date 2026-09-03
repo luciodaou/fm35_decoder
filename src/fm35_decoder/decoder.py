@@ -948,6 +948,7 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
     mode = "TEMP"
     is_ttdd = "TTDD" in message  # Simple check, or track via group iteration
     last_nn = None  # Sequence tracking for intruder detection
+    last_p = None
 
     i = 0
     while i < len(groups):
@@ -958,6 +959,7 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
                 is_ttdd = True
             elif g == "TTBB":
                 is_ttdd = False
+            last_p = None
 
             i += 1
             if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
@@ -968,6 +970,7 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
         if g == "21212":
             mode = "WIND"
             last_nn = None  # Reset sequence counter for new section
+            last_p = None
             i += 1
             continue
 
@@ -1040,13 +1043,18 @@ def parse_ttbb_ttdd(message, cloud_tables=None):
                 ppp_part = int(g[2:])
                 pressure = None
                 if nn == "00":
-                    pressure = 1000 + ppp_part if ppp_part < 100 else ppp_part
+                    pressure = 1000.0 + ppp_part if ppp_part < 100 else float(ppp_part)
                 else:
-                    pressure = float(ppp_part)
+                    if not is_ttdd and ppp_part < 100 and (last_p is None or last_p >= 900.0):
+                        pressure = 1000.0 + ppp_part
+                    else:
+                        pressure = float(ppp_part)
 
                 # If TTDD, pressure is in tenths of hPa
                 if is_ttdd:
                     pressure = pressure / 10.0
+
+                last_p = pressure
 
                 if mode == "TEMP":
                     t_group = groups[i + 1] if i + 1 < len(groups) else None
