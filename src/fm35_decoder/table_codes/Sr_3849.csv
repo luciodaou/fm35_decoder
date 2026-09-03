@@ -4,4 +4,7 @@ Code,Description
 2,"CIMO solar and infrared corrected"
 3,"CIMO cloud corrected"
 4,"NOAA solar corrected"
+5,"National solar corrected"
+6,"National solar and infrared corrected"
+7,"National cloud corrected"
 /,"Missing value"

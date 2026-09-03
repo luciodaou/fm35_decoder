@@ -21,7 +21,7 @@ wheels = [
 
 [[package]]
 name = "fm35-decoder"
-version = "0.1.2"
+version = "1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },

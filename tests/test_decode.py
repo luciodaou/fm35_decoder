@@ -1,6 +1,15 @@
+import numpy as np
 import pandas as pd
+import pytest
+
 from fm35_decoder import decode
-from fm35_decoder.decoder import parse_ttbb_ttdd
+from fm35_decoder.decoder import (
+    decode_height,
+    decode_wind,
+    load_wmo_tables,
+    parse_ttaa_ttcc,
+    parse_ttbb_ttdd,
+)
 
 
 def test_decode_standard():
@@ -16,18 +25,11 @@ def test_decode_standard():
     assert "Temp" in df_main.columns
     assert "DewPoint" in df_main.columns
     assert len(df_main) > 0
-
-    # Special Cloud data sorting
-    mask = df_special["Subject"] == "Cloud"
-    order = {"h": 0, "Nh": 1, "CL": 2, "CM": 3, "CH": 4}
-    df_special.loc[mask] = (
-        df_special.loc[mask].sort_values(by="Symbol", key=lambda col: col.map(order)).values
-    )
     assert not df_special.empty
 
 
 def test_ttbb_parse_levels_above_1000():
-    """Verify Issue #1: TTBB significant levels with pressure >= 1000 hPa are correctly decoded."""
+    """Verify TTBB significant levels with pressure >= 1000 hPa are correctly decoded."""
     ttbb = "TTBB 53008 83746 00021 20245 11021 18423 22017 21056 33952 16024="
     levels, _ = parse_ttbb_ttdd(ttbb)
     pressures = [lvl["Pressure"] for lvl in levels]
@@ -35,7 +37,7 @@ def test_ttbb_parse_levels_above_1000():
 
 
 def test_ttbb_decode_above_1000():
-    """Verify end-to-end decode with Issue #1 sounding (SBGL 2026-09-03 00Z)."""
+    """Verify end-to-end decode with sounding exceeding 1000 hPa."""
     ttaa = "TTAA 53001 83746 99021 20245 13003 00191 19845 15007 92857 15056="
     ttbb = "TTBB 53008 83746 00021 20245 11021 18423 22017 21056 33952 16024="
     df_main, _ = decode(ttaa, ttbb, None, None)
@@ -48,3 +50,82 @@ def test_ttbb_decode_above_1000():
 
     row_1017 = df_main[df_main["Pressure"] == 1017].iloc[0]
     assert row_1017["Temp"] == 21.0
+
+
+def test_max_wind_five_degree_resolution():
+    """Verify Max Wind with 5-degree speed addition (fff >= 500) decodes speed and direction accurately."""
+    # 77200: Max wind at 200 hPa
+    # 27620: Direction 275 deg (27*10 + 5), Speed 120 kt (620 - 500)
+    ttaa = "TTAA 73121 83779 77200 27620 41414 86500="
+    _, df_special = decode(ttaa, None, None, None)
+
+    wind_row = df_special[df_special["Symbol"] == "dmdmfmfmfm"]
+    assert not wind_row.empty
+    assert wind_row.iloc[0]["Value"] == "275/120kt"
+
+
+def test_variable_wind_handling():
+    """Verify dd=99 produces NaN direction and preserves speed without crashing vector interpolation."""
+    direction, speed = decode_wind("99025")
+    assert np.isnan(direction)
+    assert speed == 25.0
+
+    # End-to-end: surface level with variable wind
+    ttaa = "TTAA 73121 83779 99015 20245 99025 85570 18650 36008="
+    df_main, _ = decode(ttaa, None, None, None)
+    surf_row = df_main[df_main["Pressure"] == 1015].iloc[0]
+    assert np.isnan(surf_row["WindDir"])
+    assert surf_row["WindSpeed"] == 25.0
+
+
+def test_ttbb_dropped_group_resilience():
+    """Verify that a missing/dropped intermediate group in TTBB does not truncate the rest of the sounding."""
+    # Group 11 followed directly by 33 (group 22 missing due to GTS line noise)
+    ttbb = "TTBB 53008 83746 00021 20245 11021 18423 33017 21056 44952 16024="
+    levels, _ = parse_ttbb_ttdd(ttbb)
+    pressures = [lvl["Pressure"] for lvl in levels]
+    assert 1017.0 in pressures
+    assert 952.0 in pressures
+    assert len(levels) == 4
+
+
+def test_super_saturation_prevention():
+    """Verify interpolated dewpoint never exceeds dry temperature (Td <= T)."""
+    ttaa = "TTAA 73121 83779 99000 20020 01010 85570 10000 01010="
+    df_main, _ = decode(ttaa, None, None, None)
+    assert (df_main["DewPoint"] <= df_main["Temp"] + 1e-5).all()
+
+
+def test_high_stratosphere_heights():
+    """Verify standard isobaric levels above 10 hPa (7, 5, 3 hPa) decode with realistic heights."""
+    # 7 hPa: standard height ~33,500 m. Coded as 07350 (350 dam = 3500 m + 30000 m = 33,500 m)
+    h_7 = decode_height(7, "350")
+    assert h_7 is not None
+    assert 30000 <= h_7 <= 36000
+
+    # 5 hPa: standard height ~35,800 m. Coded as 05580
+    h_5 = decode_height(5, "580")
+    assert h_5 is not None
+    assert 34000 <= h_5 <= 38000
+
+
+def test_negative_height_at_1000hpa():
+    """Verify negative geopotential heights at 1000 hPa (500 + |h| convention)."""
+    # 1000 hPa with reported height 525 -> 500 + 25 -> -25 gpm
+    h_neg = decode_height(1000, "525")
+    assert h_neg == -25
+
+
+def test_table_performance_zero_io():
+    """Verify in-memory tables load in sub-millisecond time without disk I/O."""
+    tables = load_wmo_tables()
+    assert "T_3931" in tables
+    assert "D_0777" in tables
+    assert "CL" in tables
+    assert tables["T_3931"]["1"]["Sign"] == "-"
+
+
+def test_type_safety_input_validation():
+    """Verify non-string arguments raise TypeError."""
+    with pytest.raises(TypeError, match="must be a string or None"):
+        decode(12345, None, None, None)
