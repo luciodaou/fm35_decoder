@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .tables import STANDARD_ATMOSPHERE_HEIGHTS, WMO_TABLES, build_code_dict
+from .tables import STANDARD_ATMOSPHERE_HEIGHTS, WMO_TABLES, build_rara_table, build_sasa_table
 
 KT_PER_MS = 1.943844  # knots per metre per second
 
@@ -50,8 +50,8 @@ def load_wmo_tables(base_path: Optional[str] = None) -> Mapping[str, Any]:
         "CM": "CM_0515.csv",
         "CH": "CH_0509.csv",
         "Sr": "Sr_3849.csv",
-        "rara": "rara_3685.csv",
-        "sasa": "sasa_3872.csv",
+        "rara": "C02.csv",
+        "sasa": "C07.csv",
         "T_3931": "T_3931.csv",
         "D_0777": "D_0777.csv",
     }
@@ -66,8 +66,12 @@ def load_wmo_tables(base_path: Optional[str] = None) -> Mapping[str, Any]:
             df_code = pd.read_csv(path, dtype=str, keep_default_na=False)
             if key in ["T_3931", "D_0777"]:
                 codes[key] = df_code.set_index("Code").to_dict(orient="index")
+            elif key == "rara":
+                codes[key] = build_rara_table(df_code.to_dict(orient="records"))
+            elif key == "sasa":
+                codes[key] = build_sasa_table(df_code.to_dict(orient="records"))
             else:
-                codes[key] = build_code_dict(zip(df_code["Code"], df_code["Description"]))
+                codes[key] = df_code.set_index("Code")["Description"].to_dict()
         except Exception as exc:
             warnings.warn(f"Could not load WMO table {path} ({exc}); using in-memory table '{key}'")
             codes[key] = WMO_TABLES.get(key, {})
@@ -240,11 +244,14 @@ def decode_height(pressure: float, h_str: str) -> Optional[int]:
 # --- Atmospheric Thermodynamics & Physics ---
 
 
-def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
+def interpolate_data(df: pd.DataFrame, gaps: Optional[List[Dict[str, Any]]] = None) -> pd.DataFrame:
     """
     Interpolates missing Temperature, DewPoint, and Wind data vertically.
     - Only gaps between reported values are filled; nothing is extrapolated below the
       lowest or above the highest reported value.
+    - Layers reported as missing in Parts B/D (nn/// /////, Regulations 35.3.1.6 and
+      35.3.2.2) are never filled: gaps is a list of {"kind": "TEMP" | "WIND",
+      "p_bottom": hPa, "p_top": hPa} as returned by _parse_ttbb_ttdd.
     - Temperature/DewPoint: Linear interpolation in Log-Pressure space.
     - Physical bound: Enforces DewPoint <= Temp (no super-saturation).
     - Wind: Vector interpolation (U/V components) in Log-Pressure space.
@@ -267,6 +274,15 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
     # Natural log of pressure for vertical coordinate
     df["log_p"] = np.log(df["Pressure"].astype(float))
     df = df.set_index("log_p")
+
+    # Cells missing before interpolation (to restore inside WMO missing layers)
+    gap_columns = {"TEMP": ["Temp", "DewPoint"], "WIND": ["WindDir", "WindSpeed"]}
+    was_missing = {
+        col: df[col].isna().to_numpy()
+        for cols in gap_columns.values()
+        for col in cols
+        if col in df.columns
+    }
 
     # --- Temperature & Dewpoint Interpolation ---
     for col in ["Temp", "DewPoint"]:
@@ -320,6 +336,14 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
         df.loc[missing_dir, "WindDir"] = pd.Series(reconstructed_dir, index=df.index)[missing_dir].round(0)
 
         df = df.drop(columns=["u", "v"])
+
+    # Restore missing values inside layers that WMO reports as missing
+    pressures = df["Pressure"].astype(float).to_numpy()
+    for gap in gaps or []:
+        inside = (pressures > gap["p_top"]) & (pressures < gap["p_bottom"])
+        for col in gap_columns.get(gap["kind"], []):
+            if col in was_missing:
+                df.loc[inside & was_missing[col], col] = np.nan
 
     df = df.reset_index(drop=True)
     return df
@@ -846,9 +870,24 @@ def parse_ttbb_ttdd(
     and significant wind levels (21212 section).
     part: "B" or "D". When None, it is taken from the part identifier in the message (default "B").
     Resilient to missing intermediate sequence groups caused by GTS transmission noise.
+    Layers reported as missing (nn/// /////) are listed in the special data.
+    """
+    levels_data, special_data, _ = _parse_ttbb_ttdd(message, cloud_tables, part)
+    return levels_data, special_data
+
+
+def _parse_ttbb_ttdd(
+    message: str, cloud_tables: Optional[Dict[str, Any]] = None, part: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Implementation of parse_ttbb_ttdd that also returns the missing-data layers
+    (Regulations 35.3.1.6 and 35.3.2.2) as dicts {"kind": "TEMP" | "WIND",
+    "p_bottom": hPa, "p_top": hPa}. Unknown bounds are inf (bottom) or 0 (top).
     """
     levels_data: List[Dict[str, Any]] = []
     special_data: List[Dict[str, Any]] = []
+    gaps: List[Dict[str, Any]] = []
+    open_gap: Optional[Dict[str, Any]] = None
     clean_msg = clean_message(message)
     groups = clean_msg.split()
     mode = "TEMP"
@@ -867,6 +906,7 @@ def parse_ttbb_ttdd(
             knots = info["knots"]
             mode = "TEMP"
             last_p = None
+            open_gap = None
             continue
 
         # Regional / national sections are the last sections of the part
@@ -877,6 +917,7 @@ def parse_ttbb_ttdd(
         if g == "21212":
             mode = "WIND"
             last_p = None
+            open_gap = None
             i += 1
             continue
 
@@ -909,6 +950,13 @@ def parse_ttbb_ttdd(
                 i += 1
                 continue
 
+            # Missing-data layer: nn/// ///// between two boundary levels
+            if g[2:] == "///":
+                open_gap = {"kind": mode, "p_bottom": last_p if last_p is not None else float("inf"), "p_top": 0.0}
+                gaps.append(open_gap)
+                i += 2 if i + 1 < len(groups) and groups[i + 1] == "/////" else 1
+                continue
+
             try:
                 ppp_part = int(g[2:])
                 if nn == "00":
@@ -924,6 +972,9 @@ def parse_ttbb_ttdd(
                     pressure = pressure / 10.0
 
                 last_p = pressure
+                if open_gap is not None:
+                    open_gap["p_top"] = pressure
+                    open_gap = None
 
                 if mode == "TEMP":
                     t_group = groups[i + 1] if i + 1 < len(groups) else None
@@ -958,7 +1009,19 @@ def parse_ttbb_ttdd(
                 pass
         i += 1
 
-    return levels_data, special_data
+    for gap in gaps:
+        bottom = "start" if gap["p_bottom"] == float("inf") else f"{_fmt(gap['p_bottom'])}hPa"
+        top = "end" if gap["p_top"] == 0.0 else f"{_fmt(gap['p_top'])}hPa"
+        special_data.append(
+            {
+                "Symbol": "nn///",
+                "Subject": "Missing Layer",
+                "Description": "Temperature/Humidity" if gap["kind"] == "TEMP" else "Wind",
+                "Value": f"{bottom} - {top}",
+            }
+        )
+
+    return levels_data, special_data, gaps
 
 
 def merge_data(df_list: List[pd.DataFrame]) -> pd.DataFrame:
@@ -1003,6 +1066,7 @@ def decode_full(
 
     data_frames: List[pd.DataFrame] = []
     special_frames: List[pd.DataFrame] = []
+    gaps: List[Dict[str, Any]] = []
 
     for msg, parser, part in [
         (ttaa_msg, parse_ttaa_ttcc, "A"),
@@ -1011,14 +1075,18 @@ def decode_full(
         (ttdd_msg, parse_ttbb_ttdd, "D"),
     ]:
         if msg and isinstance(msg, str):
-            lvls, spcls = parser(msg, cloud_tables=cloud_tables, part=part)
+            if parser is parse_ttbb_ttdd:
+                lvls, spcls, part_gaps = _parse_ttbb_ttdd(msg, cloud_tables=cloud_tables, part=part)
+                gaps.extend(part_gaps)
+            else:
+                lvls, spcls = parser(msg, cloud_tables=cloud_tables, part=part)
             if lvls:
                 data_frames.append(pd.DataFrame(lvls))
             if spcls:
                 special_frames.append(pd.DataFrame(spcls))
 
     df_main = merge_data(data_frames)
-    df_main = interpolate_data(df_main)
+    df_main = interpolate_data(df_main, gaps=gaps)
     df_main = calculate_geopotential(df_main)
 
     df_special = pd.concat(special_frames, ignore_index=True) if special_frames else pd.DataFrame()

@@ -318,3 +318,90 @@ def test_csv_tables_match_in_memory_tables():
     mem_tables = load_wmo_tables()
     for key in ("Nh", "CL", "h", "CM", "CH", "Sr", "rara", "sasa"):
         assert dict(csv_tables[key]) == dict(mem_tables[key]), key
+
+
+# --- Common Code Tables C-2 / C-7 and WMO missing layers ---
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("08", "Automatic satellite navigation"),
+        ("19", "Tracking technique not specified"),
+        ("12", "Reserved"),
+        ("70", "All systems in normal operation"),
+    ],
+)
+def test_sasa_common_code_table_c7(code, expected):
+    assert load_wmo_tables()["sasa"][code] == expected
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        # Newer C-2 assignment (1xx) takes precedence over the legacy one (0xx)
+        ("23", "Vaisala RS41/DigiCORA MW41 (Finland)"),
+        ("41", "Vaisala RS41 with pressure derived from GPS height/DigiCORA MW41 (Finland)"),
+        # 1xx "Not vacant" / "Vacant" are not assignments: legacy entry is kept
+        ("37", "Vaisala RS80 (Finland)"),
+        ("40", "Sprenger E084 (Germany)"),
+        # 139 is assigned only from 01/02/2027
+        ("39", "Sprenger E076 (Germany)"),
+    ],
+)
+def test_rara_common_code_table_c2(code, expected):
+    assert load_wmo_tables()["rara"][code] == expected
+
+
+def test_demo_instrument_metadata():
+    _, df_special = decode(ttbb="TTBB 73128 83779 00938 21224 31313 42308 81131=")
+    values = dict(zip(df_special["Symbol"], df_special["Value"]))
+    assert values["rara"] == "Vaisala RS41/DigiCORA MW41 (Finland)"
+    assert values["sasa"] == "Automatic satellite navigation"
+
+
+def test_temperature_missing_layer_not_interpolated():
+    """Regulation 35.3.1.6: 33/// ///// marks missing temperature/humidity between 850 and 700 hPa."""
+    ttbb = (
+        "TTBB 73128 83779 00938 21224 11850 18650 22/// ///// 33700 08030 44600 02050 "
+        "21212 00938 01008 11750 36010 22600 30010="
+    )
+    df_main, df_special = decode(ttbb=ttbb)
+    row = _row(df_main, 750)
+    assert np.isnan(row["Temp"]) and np.isnan(row["DewPoint"])
+    assert row["WindSpeed"] == 10.0
+    # Boundary levels keep their data; levels outside the layer are still interpolated
+    assert _row(df_main, 850)["Temp"] == pytest.approx(18.6)
+    assert _row(df_main, 700)["Temp"] == pytest.approx(8.0)
+    gap = df_special[df_special["Subject"] == "Missing Layer"]
+    assert gap.iloc[0]["Description"] == "Temperature/Humidity"
+    assert gap.iloc[0]["Value"] == "850hPa - 700hPa"
+
+
+def test_wind_missing_layer_not_interpolated():
+    """Regulation 35.3.2.2: wind missing between 850 and 600 hPa; temperature there is still used."""
+    ttbb = (
+        "TTBB 73128 83779 00938 21224 11850 18650 22650 04030 33600 02050 "
+        "21212 00938 01008 11850 36008 22/// ///// 33600 30010 44500 29503="
+    )
+    df_main, df_special = decode(ttbb=ttbb)
+    row = _row(df_main, 650)
+    assert np.isnan(row["WindDir"]) and np.isnan(row["WindSpeed"])
+    assert row["Temp"] == pytest.approx(4.0)
+    # Outside the layer interpolation still works (938 -> 850 has no gap)
+    assert _row(df_main, 850)["WindSpeed"] == 8.0
+    assert set(df_special["Description"]) == {"Wind"}
+
+
+@pytest.mark.parametrize(
+    "ttbb",
+    [
+        "TTBB 73128 83779 00/// ///// 11850 18650 22700 08030=",
+        "TTBB 73128 83779 00938 21224 11850 18650 22/// /////=",
+        "TTDD 7312/ 83779 11/// /////=",
+    ],
+)
+def test_missing_layer_at_section_edges(ttbb):
+    levels, special = parse_ttbb_ttdd(ttbb)
+    assert any(item["Subject"] == "Missing Layer" for item in special)
+    decode(ttbb=ttbb) if ttbb.startswith("TTBB") else decode(ttdd=ttbb)

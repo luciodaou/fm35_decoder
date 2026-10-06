@@ -70,6 +70,8 @@ Real-world atmospheric soundings and teletype GTS transmissions frequently conta
   Sections 9 (`51515` ... `59595`) and 10 (`61616` ... `69696`) are the last sections of each part; their contents are skipped rather than decoded as levels.
 - **Missing Data Is Not Extrapolated**:
   Interpolation only fills gaps between reported values. Winds or dewpoints missing above (or below) the last report stay `NaN`.
+- **Layers Reported as Missing**:
+  Layers marked `nn/// /////` in `TTBB`/`TTDD` (Regulations 35.3.1.6 and 35.3.2.2) are never interpolated; they are listed in `df_special` as `Missing Layer`.
 - **Stratospheric Standard Levels ($P < 10\text{ hPa}$)**:
   Soundings reaching the middle stratosphere in `TTCC` ($7, 5, 3, 2, 1\text{ hPa}$) are evaluated against extended standard atmosphere heights up to $47,800\text{ gpm}$.
 - **Physical Super-Saturation Prevention**:
@@ -92,7 +94,7 @@ The decoder incorporates **virtual temperature ($T_v$)** when moisture data is a
 
 ## Performance & Architecture
 
-- **In-Memory WMO Code Tables**: Core WMO tables (3931, 0777, 2700, 0513, 1600, 0515, 0509, 3849, 3872, and Common Code Table C-2) are compiled directly into memory in `tables.py`, providing sub-microsecond table access with zero disk I/O overhead.
+- **In-Memory WMO Code Tables**: Core WMO tables (3931, 0777, 2700, 0513, 1600, 0515, 0509, 3849, and Common Code Tables C-2 and C-7 from WMO's official [wmo-im/CCT](https://github.com/wmo-im/CCT) release) are compiled directly into memory in `tables.py`, providing sub-microsecond table access with zero disk I/O overhead.
 - **NumPy Vectorization**: Hypsometric height integration and vector wind calculations leverage NumPy array operations for speed when batch-processing large archives of historical radiosonde soundings.
 
 ---
@@ -123,8 +125,8 @@ The decoder incorporates **virtual temperature ($T_v$)** when moisture data is a
         CM       Cloud       Mid Type                                                       No CM clouds
         CH       Cloud      High Type                                                       No CH clouds
         sr  Solar/Inst     Solar Corr    Solar and infrared corrected automatically by radiosonde system
-      rara  Solar/Inst     Sonde Type  Mesural FMO 1950A (France) | Vaisala RS41/DigiCORA MW41 (Finland)
-      sasa  Solar/Inst       Tracking                                                       Radar (5 cm)
+      rara  Solar/Inst     Sonde Type                               Vaisala RS41/DigiCORA MW41 (Finland)
+      sasa  Solar/Inst       Tracking                                     Automatic satellite navigation
      8GGgg  Solar/Inst           Time                                                              11:31
     PtPtPt  Tropopause       Pressure                                                            90.6hPa
     TtTtTt  Tropopause    Temperature                                                             -77.1C

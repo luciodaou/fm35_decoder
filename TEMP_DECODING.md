@@ -22,8 +22,9 @@ The decoding methodology implemented in this library adheres strictly to:
   - **Code Table 0515** ($C_M$): *Clouds of the genera Altocumulus, Altostratus, and Nimbostratus*.
   - **Code Table 0509** ($C_H$): *Clouds of the genera Cirrus, Cirrocumulus, and Cirrostratus*.
   - **Code Table 3849** ($s_r$): *Solar and infrared radiation correction*.
-  - **Code Table 3872** ($s_a s_a$): *Tracking technique and system status*.
-  - **Common Code Table C-2 / Code Table 3685** ($r_a r_a$): *Radiosonde model type*.
+  - **Code Table 3872 / Common Code Table C-7** ($s_a s_a$): *Tracking technique/status of system used*.
+  - **Code Table 3685 / Common Code Table C-2** ($r_a r_a$): *Radiosonde/sounding system used*.
+  - Common Code Tables C-2 and C-7 are taken from WMO's official machine-readable release ([wmo-im/CCT](https://github.com/wmo-im/CCT), commit `8d5866c`), vendored in `src/fm35_decoder/table_codes/`.
 
 ---
 
@@ -140,8 +141,8 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 ### 4.11 Radiosonde Metadata & Release Time: `31313 sr rara sasa 8GGgg`
 - `31313`: Section identifier for instrumentation metadata.
 - `sr`: Solar and infrared radiation correction applied (Code Table 3849).
-- `rara`: Radiosonde model type (Common Code Table C-2 / Code Table 3685; e.g., Vaisala RS41, Graw DFM-17).
-- `sasa`: Wind-tracking technique (Code Table 3872; e.g., GPS, Radar, Radiotheodolite).
+- `rara`: Radiosonde/sounding system (Common Code Table C-2). TEMP carries only the last two digits of C-2, so a code can match both a legacy assignment (C-2 `0xx`) and a newer one (C-2 `1xx`, assigned since 2008). The decoder reports the **newer assignment** when one exists (e.g. `23` = C-2 123 *Vaisala RS41/DigiCORA MW41*, not legacy 023 *Mesural FMO 1950A*). Entries marked *Not vacant*, *Vacant* or *Reserved for BUFR only*, and assignments dated in the future, are ignored.
+- `sasa`: Tracking technique / status of system (Common Code Table C-7): `00`–`19` tracking techniques (e.g. `08` = *Automatic satellite navigation*, `19` = *not specified*), `20`–`99` system status codes (e.g. `70` = *All systems in normal operation*).
 - `8GGgg`: Actual radiosonde launch time in hours (`GG`) and minutes (`gg`) UTC.
 
 ### 4.12 Regional and National Sections: `51515` … `59595`, `61616` … `69696`
@@ -156,6 +157,14 @@ Atmospheric pressure decreases exponentially with height in accordance with the 
 - Temperature and dewpoint vary approximately linearly with the **natural logarithm of pressure** ($\ln P$).
 - Missing intermediate levels in `df_main` are interpolated with respect to $\ln P$, preventing artificial distortions caused by linear interpolation in Cartesian pressure space.
 - Only gaps **between** reported values are filled. Nothing is extrapolated below the lowest or above the highest report: winds or dew points missing at the top of the sounding stay missing.
+
+### 5.1.1 Layers Reported as Missing Are Never Interpolated
+In Parts B and D, a layer with missing data is reported as `nn/// /////` between two boundary levels (Regulation 35.3.1.6 for temperature/humidity, layers at least 20 hPa thick; Regulation 35.3.2.2 for wind, at least 50 hPa thick). The decoder:
+- leaves temperature/dew point (or wind) `NaN` at every level strictly inside such a layer, even when values above and below would allow interpolation;
+- keeps the boundary levels and any value actually reported inside the layer (e.g. a standard level from Part A);
+- lists each layer in `df_special` (`Subject = "Missing Layer"`).
+
+Geopotential heights inside the layer are still computed by the hypsometric equation, using the temperatures at its boundaries.
 
 ### 5.2 Vector Wind Interpolation
 Interpolating wind direction and speed directly as scalar numbers creates severe mathematical artifacts (e.g., averaging $350^\circ$ and $10^\circ$ scalar numbers produces $180^\circ$ South wind instead of $360^\circ$ North wind).
