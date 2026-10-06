@@ -4,7 +4,7 @@ Based on WMO Manual on Codes, WMO-No. 306, Volume I.1.
 All tables are precompiled as in-memory Python dictionaries for 0 ms lookup overhead.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Tuple
 
 # WMO Code Table 3931 - Ta: Approximate tenths of degree Celsius and its sign
 TABLE_T_3931: Dict[str, Dict[str, Any]] = {
@@ -23,7 +23,6 @@ TABLE_T_3931: Dict[str, Dict[str, Any]] = {
 # WMO Code Table 0777 - DaDa: Dew-point depression in Celsius
 # Codes 00-50: 0.0 to 5.0 C (in tenths of a degree)
 # Codes 56-99: 6 to 49 C (in whole degrees, DaDa - 50)
-# Code 99 indicates depression of 49 C or more
 TABLE_D_0777: Dict[str, Dict[str, Any]] = {}
 for i in range(51):
     code_str = f"{i:02d}"
@@ -36,8 +35,7 @@ for i in range(51, 56):
 # 56-99: 6.0 to 49.0 C
 for i in range(56, 100):
     val = float(i - 50)
-    desc = f"{int(val)} °C or more" if i == 99 else f"{int(val)} °C"
-    TABLE_D_0777[f"{i:02d}"] = {"Value": val, "Description": desc}
+    TABLE_D_0777[f"{i:02d}"] = {"Value": val, "Description": f"{int(val)} °C"}
 
 TABLE_D_0777["//"] = {"Value": None, "Description": "No humidity data available"}
 
@@ -116,16 +114,16 @@ TABLE_CH_0509: Dict[str, str] = {
     "/": "CH clouds invisible",
 }
 
-# WMO Code Table 3849 - sr: Solar and infrared radiation correction
+# WMO Code Table 3849 - sr: Solar and infrared radiation correction (WMO-No. 306 Vol I.1, 2019)
 TABLE_Sr_3849: Dict[str, str] = {
     "0": "No correction",
-    "1": "CIMO solar corrected",
-    "2": "CIMO solar and infrared corrected",
-    "3": "CIMO cloud corrected",
-    "4": "NOAA solar corrected",
-    "5": "National solar corrected",
-    "6": "National solar and infrared corrected",
-    "7": "National cloud corrected",
+    "1": "CIMO solar corrected and CIMO infrared corrected",
+    "2": "CIMO solar corrected and infrared corrected",
+    "3": "CIMO solar corrected only",
+    "4": "Solar and infrared corrected automatically by radiosonde system",
+    "5": "Solar corrected automatically by radiosonde system",
+    "6": "Solar and infrared corrected as specified by country",
+    "7": "Solar corrected as specified by country",
     "/": "Missing value",
 }
 
@@ -159,96 +157,194 @@ TABLE_sasa_3872: Dict[str, str] = {
     "//": "Tracking system unknown or missing",
 }
 
-# WMO Common Code Table C-2 / Code Table 3685 - rara: Radiosonde type
-# Contains both historical instruments and modern digital sounding units
-TABLE_rara_3685: Dict[str, str] = {
-    "00": "Reserved",
-    "01": "iMet-1-BB (United States)",
-    "02": "No radiosonde - passive target (reflector)",
-    "03": "No radiosonde - active target (transponder)",
-    "04": "No radiosonde - passive temperature-humidity profiler",
-    "05": "No radiosonde - active temperature-humidity profiler",
-    "06": "No radiosonde - radio-acoustic sounder",
-    "07": "iMet-1-AB (United States)",
-    "08": "iMet-2 (United States)",
-    "09": "No radiosonde - system unknown or not specified",
-    "10": "VIZ type A pressure-commutated (United States)",
-    "11": "VIZ type B time-commutated (United States)",
-    "12": "RS SDC (Space Data Corporation - United States)",
-    "13": "Astor (Australia)",
-    "14": "VIZ MARK I MICROSONDE (United States)",
-    "15": "EEC Company type 23 (United States)",
-    "16": "Elin (Austria)",
-    "17": "GRAW G. (Germany)",
-    "18": "GRAW DFM-06 (Germany)",
-    "19": "GRAW M60 (Germany)",
-    "20": "Indian Meteorological Service MK3 (India)",
-    "21": "VIZ/Jin Yang MARK I MICROSONDE (Republic of Korea)",
-    "22": "Meisei RS2-80 (Japan)",
-    "23": "Mesural FMO 1950A (France)",
-    "24": "Mesural FMO 1945A (France)",
-    "25": "Mesural MH73A (France)",
-    "26": "Meteolabor Basora (Switzerland)",
-    "27": "AVK-MRZ (Russian Federation)",
-    "28": "Meteorit MARZ2-1 (Russian Federation)",
-    "29": "Meteorit MARZ2-2 (Russian Federation)",
-    "30": "Oki RS2-80 (Japan)",
-    "31": "VIZ/Valcom type A pressure-commutated (Canada)",
-    "32": "Shanghai Radio (China)",
-    "33": "UK Met Office MK3 (UK)",
-    "34": "Vinohrady (Czechia)",
-    "35": "Vaisala RS18 (Finland)",
-    "36": "Vaisala RS21 (Finland)",
-    "37": "Vaisala RS80 (Finland)",
-    "38": "VIZ LOCATE Loran-C (United States)",
-    "39": "Sprenger E076 (Germany)",
-    "40": "Sprenger E084 (Germany)",
-    "41": "Sprenger E085 (Germany)",
-    "42": "Sprenger E086 (Germany)",
-    "43": "AIR IS - 4A - 1680 (United States)",
-    "44": "AIR IS - 4A - 1680 X (United States)",
-    "45": "RS MSS (United States)",
-    "46": "AIR IS - 4A - 403 (United States)",
-    "47": "Meisei RS2-91 (Japan)",
-    "48": "VALCOM (Canada)",
-    "49": "VIZ MARK II (United States)",
-    "50": "GZK (Russian Federation)",
-    "51": "Vaisala RS90 (Finland)",
-    "52": "Vaisala RS92 / DigiCORA (Finland)",
-    "53": "Meteolabor Snow White (Switzerland)",
-    "54": "Sippican MARK II Microsonde (United States)",
-    "55": "GRAW DFM-97 (Germany)",
-    "56": "Meteomodem M2K2 (France)",
-    "57": "Modem M10 (France)",
-    "58": "Modem M20 (France)",
-    "59": "Lockheed Martin Sippican LMS-6 (United States)",
-    "60": "Meisei RS-01G (Japan)",
-    "61": "Vaisala RS41 / DigiCORA MW41 (Finland)",
-    "62": "Vaisala RS41-SGP (Finland)",
-    "63": "GRAW DFM-09 (Germany)",
-    "64": "GRAW DFM-17 (Germany)",
-    "65": "Meisei iMS-100 (Japan)",
-    "66": "InterMet iMet-4 (United States)",
-    "67": "InterMet iMet-54 (United States)",
-    "68": "Meteo-France Meteomodem GPS (France)",
-    "69": "Cangzhou GTS1-2 (China)",
-    "70": "Nanjing GTS1-1 (China)",
-    "71": "Huayun GTS1 (China)",
-    "72": "Taiyuan GTS1 (China)",
-    "73": "Shanghai Changji GTS1 (China)",
-    "74": "Vaisala RS92-NGP (Finland)",
-    "75": "Vaisala RS92-SGP (Finland)",
-    "76": "Jinyang RSG-20A (Republic of Korea)",
-    "77": "AVK-BAR (Russian Federation)",
-    "78": "Radiosonde-1 (Russian Federation)",
-    "79": "PAZA-22 (Russian Federation)",
-    "80": "Vaisala RS41-SG (Finland)",
-    "81": "Vaisala RS41-SGM (Finland)",
-    "82": "GRAW DFM-17 GPS (Germany)",
-    "83": "Meisei RS-11G (Japan)",
-    "99": "Missing or unknown radiosonde type",
-    "//": "Radiosonde type missing",
-}
+# WMO Code Table 3685 - rara: Radiosonde/sounding system used
+# WMO-No. 306 refers to Common Code Table C-2. TEMP carries only the last two digits of C-2,
+# so codes 0xx and 1xx share a key; such duplicates are combined (see build_code_dict).
+# Rows mirror table_codes/rara_3685.csv. Pending verification against the official C-2 text.
+_RARA_ROWS: Tuple[Tuple[str, str], ...] = (
+    ('00', 'Reserved'),
+    ('01', 'iMet-1-BB (United States)'),
+    ('02', 'No radiosonde - passive target (e.g. reflector)'),
+    ('03', 'No radiosonde - active target (e.g. transponder)'),
+    ('04', 'No radiosonde - passive temperature-humidity profiler'),
+    ('05', 'No radiosonde - active temperature-humidity profiler'),
+    ('06', 'No radiosonde - radio-acoustic sounder'),
+    ('07', 'iMet-1-AB (United States)'),
+    ('08', 'No radiosonde -... (reserved)'),
+    ('09', 'No radiosonde - system unknown or not specified'),
+    ('10', 'VIZ type A pressure-commutated (United States)'),
+    ('11', 'VIZ type B time-commutated (United States)'),
+    ('12', 'RS SDC (Space Data Corporation - United States)'),
+    ('13', 'Astor (no longer made - Australia)'),
+    ('14', 'VIZ MARK I MICROSONDE (United States)'),
+    ('15', 'EEC Company type 23 (United States)'),
+    ('16', 'Elin (Austria)'),
+    ('17', 'Graw G. (Germany)'),
+    ('18', 'Graw DFM-06 (Germany)'),
+    ('19', 'Graw M60 (Germany)'),
+    ('20', 'Indian Meteorological Service MK3 (India)'),
+    ('21', 'VIZ/Jin Yang MARK I MICROSONDE (Republic of Korea)'),
+    ('22', 'Meisei RS2-80 (Japan)'),
+    ('23', 'Mesural FMO 1950A (France)'),
+    ('24', 'Mesural FMO 1945A (France)'),
+    ('25', 'Mesural MH73A (France)'),
+    ('26', 'Meteolabor Basora (Switzerland)'),
+    ('27', 'AVK-MRZ (Russian Federation)'),
+    ('28', 'Meteorit MARZ2-1 (Russian Federation)'),
+    ('29', 'Meteorit MARZ2-2 (Russian Federation)'),
+    ('30', 'Oki RS2-80 (Japan)'),
+    ('31', 'VIZ/Valcom type A pressure-commutated (Canada)'),
+    ('32', 'Shanghai Radio (China)'),
+    ('33', 'UK Met Office MK3 (UK)'),
+    ('34', 'Vinohrady (Czechia)'),
+    ('35', 'Vaisala RS18 (Finland)'),
+    ('36', 'Vaisala RS21 (Finland)'),
+    ('37', 'Vaisala RS80 (Finland)'),
+    ('38', 'VIZ LOCATE Loran-C (United States)'),
+    ('39', 'Sprenger E076 (Germany)'),
+    ('40', 'Sprenger E084 (Germany)'),
+    ('41', 'Sprenger E085 (Germany)'),
+    ('42', 'Sprenger E086 (Germany)'),
+    ('43', 'AIR IS - 4A - 1680 (United States)'),
+    ('44', 'AIR IS - 4A - 1680 X (United States)'),
+    ('45', 'RS MSS (United States)'),
+    ('46', 'AIR IS - 4A - 403 (United States)'),
+    ('47', 'Meisei RS2-91 (Japan)'),
+    ('48', 'VALCOM (Canada)'),
+    ('49', 'VIZ MARK II (United States)'),
+    ('50', 'Graw DFM-90 (Germany)'),
+    ('51', 'VIZ-B2 (United States)'),
+    ('52', 'Vaisala RS80-57H'),
+    ('53', 'AVK-RF95 (Russian Federation)'),
+    ('54', 'Graw DFM-97 (Germany)'),
+    ('55', 'Meisei RS-01G (Japan)'),
+    ('56', 'M2K2 (France)'),
+    ('57', 'Modem M2K2-DC (France)'),
+    ('58', 'AVK-BAR (Russian Federation)'),
+    ('59', 'Modem M2K2-R 1680 MHz RDF radiosonde with pressure sensor chip (France)'),
+    ('60', 'Vaisala RS80/MicroCora (Finland)'),
+    ('61', 'Vaisala RS80/Loran/Digicora I, II or Marwin (Finland)'),
+    ('62', 'Vaisala RS80/PCCora (Finland)'),
+    ('63', 'Vaisala RS80/Star (Finland)'),
+    ('64', 'Orbital Sciences Corporation, Space Data Division, transponder radiosonde, type 909-11-XX, where XX corresponds to the model of the instrument (United States)'),
+    ('65', 'VIZ transponder radiosonde, model number 1499-520 (United States)'),
+    ('66', 'Vaisala RS80 /Autosonde (Finland)'),
+    ('67', 'Vaisala RS80/Digicora III (Finland)'),
+    ('68', 'AVK-RZM-2 (Russian Federation)'),
+    ('69', 'MARL-A or Vektor-M-RZM-2 (Russian Federation)'),
+    ('70', 'Vaisala RS92/Star (Finland)'),
+    ('71', 'Vaisala RS90/Loran/Digicora I, II or Marwin (Finland)'),
+    ('72', 'Vaisala RS90/PC-Cora (Finland)'),
+    ('73', 'Vaisala RS90/Autosonde (Finland)'),
+    ('74', 'Vaisala RS90/Star (Finland)'),
+    ('75', 'AVK-MRZ-ARMA (Russian Federation)'),
+    ('76', 'AVK-RF95-ARMA (Russian Federation)'),
+    ('77', 'GEOLINK GPSonde GL98 (France)'),
+    ('78', 'Vaisala RS90/Digicora III (Finland)'),
+    ('79', 'Vaisala RS92/Digicora I,II or Marwin (Finland)'),
+    ('80', 'Vaisala RS92/Digicora III (Finland)'),
+    ('81', 'Vaisala RS92/Autosonde (Finland)'),
+    ('82', 'Sippican MK2 GPS/STAR (United States) with rod thermistor, carbon element and derived pressure'),
+    ('83', 'Sippican MK2 GPS/W9000 (United States) with rod thermistor, carbon element and derived pressure'),
+    ('84', 'Sippican MARK II with chip thermistor, carbon element and derived pressure from GPS height'),
+    ('85', 'Sippican MARK IIA with chip thermistor, carbon element and derived pressure from GPS height'),
+    ('86', 'Sippican MARK II with chip thermistor, pressure and carbon element'),
+    ('87', 'Sippican MARK IIA with chip thermistor, pressure and carbon element'),
+    ('88', 'MARL-A or Vektor-M-MRZ (Russian Federation)'),
+    ('89', 'MARL-A or Vektor-M-BAR (Russian Federation)'),
+    ('90', 'Radiosonde not specified or unknown'),
+    ('91', 'Pressure only radiosonde'),
+    ('92', 'Pressure only radiosonde plus transponder'),
+    ('93', 'Pressure only radiosonde plus radar reflector'),
+    ('94', 'No pressure radiosonde plus transponder'),
+    ('95', 'No pressure radiosonde plus radar reflector'),
+    ('96', 'Descending radiosonde'),
+    ('97', 'iMet-2/iMet-1500 RDF radiosonde with pressure sensor chip (South Africa)'),
+    ('98', 'iMet-2/iMet-1500 GPS radiosonde with derived pressure from GPS height (South Africa)'),
+    ('99', 'iMet-2/iMet-3200 GPS radiosonde with derived pressure from GPS height (South Africa)'),
+    ('01', 'Not vacant'),
+    ('07', 'Not vacant'),
+    ('10', 'Sippican LMS5 w/Chip Thermistor, duct mounted capacitance relative humidity sensor and derived pressure from GPS height'),
+    ('11', 'Sippican LMS6 w/Chip Thermistor, external boom mounted capacitance relative humidity sensor, and derived pressure from GPS height'),
+    ('12', 'Jin Yang RSG-20A with derived pressure from GPS height/GL-5000P (Republic of Korea)'),
+    ('13', 'Vaisala RS92/MARWIN MW32 (Finland)'),
+    ('14', 'Vaisala RS92/DigiCORA MW41 (Finland)'),
+    ('15', 'PAZA-12M/Radiotheodolite-UL (Ukraine)'),
+    ('16', 'PAZA-22/AVK-1 (Ukraine)'),
+    ('17', 'Graw DFM-09 (Germany)'),
+    ('18', 'Not vacant'),
+    ('19', 'Polus-MRZ-N1 (Russian Federation)'),
+    ('20', 'Not vacant'),
+    ('21', 'Jin Yang 1524LA LORAN-C/GL5000 (Republic of Korea)'),
+    ('22', 'Meisei RS-11G GPS radiosonde w/thermistor, capacitance relative humidity sensor, and derived pressure from GPS height (Japan)'),
+    ('23', 'Vaisala RS41/DigiCORA MW41 (Finland)'),
+    ('24', 'Vaisala RS41/AUTOSONDE (Finland)'),
+    ('25', 'Vaisala RS41/MARWIN MW32 (Finland)'),
+    ('26', 'Meteolabor SRS-C34/Argus 37 (Switzerland)'),
+    ('27', 'Not vacant'),
+    ('28', 'AVK - AK2-02 (Russian Federation)'),
+    ('29', 'MARL-A or Vektor-M - AK2-02 (Russian Federation)'),
+    ('30', 'Meisei RS-06G (Japan)'),
+    ('31', 'Taiyuan GTS1-1/GFE(L) (China )'),
+    ('32', 'Shanghai GTS1/GFE(L) (China)'),
+    ('33', 'Nanjing GTS1-2/GFE(L) (China)'),
+    ('34', 'iMet-4 GPS radiosonde (USA)'),
+    ('35', 'Meisei iMS-100 GPS radiosonde w/thermistor sensor, capacitance relative humidity sensor, and derived pressure from GPS height (Japan)'),
+    ('36', 'Meisei iMDS-17 GPS dropsonde w/thermistor sensor, capacitance relative humidity sensor, and capacitance pressure sensor (Japan)'),
+    ('37', 'Not vacant'),
+    ('38', 'WEATHEX WxR-301D with derived pressure from GPS (Republic of Korea)'),
+    ('41', 'Vaisala RS41 with pressure derived from GPS height/DigiCORA MW41 (Finland)'),
+    ('42', 'Vaisala RS41 with pressure derived from GPS height/AUTOSONDE (Finland)'),
+    ('43', 'NanJing Daqiao XGP-3G (China)*'),
+    ('44', 'TianJin HuaYunTianYi GTS(U)1 (China)*'),
+    ('45', 'Beijing Changfeng CF-06 (China)*'),
+    ('46', 'Shanghai Changwang GTS3 (China)*'),
+    ('47', 'Not vacant'),
+    ('48', 'PAZA-22M/MARL-A'),
+    ('49', 'Not vacant'),
+    ('50', 'Meteolabor SRS-C50/Argus (Switzerland)'),
+    ('51', 'Not vacant'),
+    ('52', 'Vaisala RS92-NGP/Intermet IMS-2000 (United States)'),
+    ('53', 'AVK - I-2012 (Russian Federation)'),
+    ('54', 'Graw DFM-17 (Germany)'),
+    ('60', 'MARL-A or Vektor-M - I-2012 (Russian Federation)'),
+    ('61', 'Not vacant'),
+    ('62', 'MARL-A or Vektor-M - MRZ-3MK (Russian Federation)'),
+    ('63', 'Modem M20 radiosonde w/thermistor sensor, capacitance relative humidity sensor, and derived pressure from GPS height (France)'),
+    ('64', 'Modem PilotSonde GPS radiosonde (France)'),
+    ('65', 'Meteosis MTS-01 (Turkiye)'),
+    ('66', 'Vacant'),
+    ('73', 'МARL-A (Russian Federation) - ASPAN-15 (Kazakhstan)'),
+    ('77', 'Modem GPSonde M10 (France)'),
+    ('82', 'Lockheed Martin LMS-6 w/chip thermistor; external boom mounted polymer capacitive relative humidity sensor; capacitive pressure sensor and GPS wind'),
+    ('83', 'Vaisala RS92-D/Intermet IMS 1500 w/silicon capacitive pressure sensor, capacitive wire temperature sensor, twin thin-film heated polymer capacitive relative humidity sensor and RDF wind'),
+    ('84', 'iMet-54/iMet-3200/3400 GPS radiosonde with derived pressure from GPS height (South Africa)'),
+)
+
+
+# Placeholder descriptions that never override a real entry when codes are combined
+_PLACEHOLDER_DESCRIPTIONS = {"Not vacant", "Vacant"}
+
+
+def build_code_dict(rows: Iterable[Tuple[str, str]]) -> Dict[str, str]:
+    """
+    Builds a code -> description dictionary, combining duplicate codes with " | "
+    and ignoring placeholder descriptions ("Not vacant", "Vacant") for codes already defined.
+    """
+    table: Dict[str, str] = {}
+    for code, desc in rows:
+        desc = desc.strip()
+        if code not in table:
+            table[code] = desc
+        elif desc and desc not in _PLACEHOLDER_DESCRIPTIONS and desc != table[code]:
+            if table[code] in _PLACEHOLDER_DESCRIPTIONS:
+                table[code] = desc
+            else:
+                table[code] = f"{table[code]} | {desc}"
+    return table
+
+
+TABLE_rara_3685: Dict[str, str] = build_code_dict(_RARA_ROWS)
 
 # Standard Atmosphere reference geopotential heights (in meters)
 # Extended up to 1 hPa (mesosphere) based on US Standard Atmosphere 1976 / ICAO Standard Atmosphere

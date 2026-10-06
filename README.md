@@ -56,8 +56,20 @@ Real-world atmospheric soundings and teletype GTS transmissions frequently conta
   Calm wind is represented as `WindDir = 0.0, WindSpeed = 0.0`. True non-calm winds blowing from North are assigned `360.0°`.
 - **GTS Transmission Sequence Breaks**:
   If network or teletype line noise drops an intermediate significant level in `TTBB` or `TTDD` (e.g., group sequence jumps directly from `22` to `44`), the decoder recovers automatically rather than terminating or discarding the remainder of the sounding.
-- **Negative Geopotential Heights ($1000\text{ hPa}$ below sea level)**:
-  When a $1000\text{ hPa}$ surface lies below sea level or below ground, WMO encodes it as $500 + |h|$. The decoder detects this offset and outputs true negative geopotential heights (e.g., `00520` $\implies -20\text{ gpm}$).
+- **Negative Geopotential Heights (surfaces below sea level)**:
+  When a standard isobaric surface lies below sea level, WMO encodes its geopotential as $500 + |h|$. The decoder detects this offset and outputs true negative geopotential heights (e.g., `00520` $\implies -20\text{ gpm}$).
+- **Wind Groups Omitted Above the $I_d$ Level**:
+  Per Regulation 35.2.2.3 and Code Table 1734, the header indicator $I_d$ gives the last standard level carrying a wind group; above it the wind group is omitted (`/` means no standard-level winds at all). The decoder reads two groups per level above that point instead of misreading the next level as a wind.
+- **Wind Speed Units**:
+  `YY > 50` means knots; otherwise the message reports m/s. All speeds (including tropopause, maximum wind and wind shear) are output in **knots**, converting m/s reports (× 1.943844).
+- **Parts C and D in Tenths of hPa**:
+  Above 100 hPa, significant-level, tropopause ($P_tP_tP_t$) and maximum-wind ($P_mP_mP_m$) pressures are reported in tenths of a hectopascal (e.g., `88906` in `TTCC` $\implies 90.6\text{ hPa}$).
+- **Headers With Solidi**:
+  `YYGGId` / `YYGGa4` groups containing `/` (always the case in `TTDD`, `YYGG/`) are recognized, so the station number is never decoded as data. Each argument of `decode()` is decoded as the part it is passed as, even if the `TTAA`/`TTCC`/... identifier is missing.
+- **Regional and National Sections**:
+  Sections 9 (`51515` ... `59595`) and 10 (`61616` ... `69696`) are the last sections of each part; their contents are skipped rather than decoded as levels.
+- **Missing Data Is Not Extrapolated**:
+  Interpolation only fills gaps between reported values. Winds or dewpoints missing above (or below) the last report stay `NaN`.
 - **Stratospheric Standard Levels ($P < 10\text{ hPa}$)**:
   Soundings reaching the middle stratosphere in `TTCC` ($7, 5, 3, 2, 1\text{ hPa}$) are evaluated against extended standard atmosphere heights up to $47,800\text{ gpm}$.
 - **Physical Super-Saturation Prevention**:
@@ -90,38 +102,34 @@ The decoder incorporates **virtual temperature ($T_v$)** when moisture data is a
 ### `df_main` (Vertical Profile)
 ```
   Pressure  Height  Temp  DewPoint  WindDir  WindSpeed
-      1000     163  20.4      18.0     10.0        8.0
-       938     714  21.2      18.8     10.0        8.0
+      1000     163   NaN       NaN      NaN        NaN
+       938     717  21.2      18.8     10.0        8.0
        925     843  20.0      18.1     75.0        6.0
-       882    1249  16.8      16.4     23.0        8.5
-       870    1366  19.8      13.8     15.0       10.0
+       882    1253  16.8      16.4     23.0        8.5
+       870    1371  19.8      13.8     15.0       10.0
        850    1570  18.6      13.6    360.0        8.0
        ...     ...   ...       ...      ...        ...
         30   23800 -58.3     -91.3     85.0       35.0
-        20   26480 -55.2     -89.0     90.0       38.0
-        10   31020 -44.1       NaN     95.0       42.0
+        29   24013 -58.0     -92.0     85.0       44.0
+        28   24234 -57.7     -92.7     90.0       41.0
 ```
 
 ### `df_special` (Metadata & Special Levels)
 ```
-    Symbol     Subject    Description                                    Value
-         h       Cloud    Base Height                  600-1000m (2000-3300ft)
-        Nh       Cloud         Amount                                  8 oktas
-        CL       Cloud       Low Type  Stratus nebulosus and/or Stratus fractus
-        CM       Cloud       Mid Type                             No CM clouds
-        CH       Cloud      High Type                             No CH clouds
-        sr  Solar/Inst     Solar Corr                     NOAA solar corrected
-      rara  Solar/Inst     Sonde Type     Vaisala RS41/DigiCORA MW41 (Finland)
-      sasa  Solar/Inst       Tracking                               Radar (5 cm)
-     8GGgg  Solar/Inst           Time                                    11:31
-    PtPtPt  Tropopause       Pressure                                   906hPa
-    TtTtTt  Tropopause    Temperature                                   -77.1C
-      DtDt  Tropopause       Dewpoint                                   -89.1C
-  dtdtftft  Tropopause           Wind                                 260/18kt
-    PmPmPm    Max Wind       Pressure                                   200hPa
-dmdmfmfmfm    Max Wind           Wind                                275/120kt
-      vbvb    Max Wind    Shear Below                                     14kt
-      vava    Max Wind    Shear Above                                     14kt
+    Symbol     Subject    Description                                                              Value
+         h       Cloud    Base Height                                          600-1000 m (2000-3300 ft)
+        Nh       Cloud         Amount                                                            8 oktas
+        CL       Cloud       Low Type Stratus nebulosus and/or Stratus fractus other than of bad weather
+        CM       Cloud       Mid Type                                                       No CM clouds
+        CH       Cloud      High Type                                                       No CH clouds
+        sr  Solar/Inst     Solar Corr    Solar and infrared corrected automatically by radiosonde system
+      rara  Solar/Inst     Sonde Type  Mesural FMO 1950A (France) | Vaisala RS41/DigiCORA MW41 (Finland)
+      sasa  Solar/Inst       Tracking                                                       Radar (5 cm)
+     8GGgg  Solar/Inst           Time                                                              11:31
+    PtPtPt  Tropopause       Pressure                                                            90.6hPa
+    TtTtTt  Tropopause    Temperature                                                             -77.1C
+      DtDt  Tropopause       Dewpoint                                                             -89.1C
+  dtdtftft  Tropopause           Wind                                                           260/18kt
 ```
 
 ---

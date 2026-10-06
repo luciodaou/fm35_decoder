@@ -56,9 +56,10 @@ A complete radiosonde sounding is divided into four distinct parts:
 ### 4.1 Header Group: `TTAA YYGGId IIiii`
 - `TTAA`: Part identifier (`TTAA`, `TTBB`, `TTCC`, or `TTDD`).
 - `YYGGId`:
-  - `YY`: Day of the month (with 50 added if wind speed is reported in knots; e.g., day 23 reported in knots becomes `73`).
+  - `YY`: Day of the month (with 50 added if wind speed is reported in knots; e.g., day 23 reported in knots becomes `73`). When `YY` is not modified (≤ 31), speeds are in m/s; the decoder converts them to knots.
   - `GG`: Observation hour UTC (e.g., `12` = 12:00 UTC, `00` = 00:00 UTC).
-  - `Id`: Indicator for the highest standard level observed and wind units.
+  - `Id` (Parts A and C, Code Table 1734): last standard isobaric surface for which the wind group is included. Part A: `1` = 100 (or 150) hPa, `2` = 200 (or 250), `3` = 300, `4` = 400, `5` = 500, `7` = 700, `8` = 850, `9` = 925, `0` = 1000 hPa. Part C: `1` = 10, `2` = 20, `3` = 30, `5` = 50, `7` = 70 hPa. `/` = no wind group at any standard level. Above that level each standard level has only `PPhhh TTTDD` (Regulation 35.2.2.3(b)).
+  - Part B uses `YYGGa4` (`a4` = type of measuring equipment) and Part D uses `YYGG/`.
 - `IIiii`: WMO Station Identifier (e.g., `83779` for São Paulo, Brazil).
 
 ### 4.2 Surface Level Group: `99PPP TTTDD dddff`
@@ -77,7 +78,7 @@ A complete radiosonde sounding is divided into four distinct parts:
 - `hhh`: Geopotential height of the pressure surface.
   - **For $P > 500\text{ hPa}$** (e.g., $1000, 925, 850, 700\text{ hPa}$): Reported in **whole standard geopotential meters**. Thousands digits are omitted. For example, $850\text{ hPa}$ coded as `85570` represents $1570\text{ gpm}$.
   - **For $P \le 500\text{ hPa}$** (e.g., $500, 400, 300, 200, 100\text{ hPa}$): Reported in **tens of geopotential meters (decameters, dam)**. For example, $500\text{ hPa}$ coded as `50591` represents $591\text{ dam} = 5910\text{ gpm}$.
-  - **Sub-zero / Below-sea-level heights**: At $1000\text{ hPa}$, if the surface is below sea level or the pressure surface lies below ground, 500 is added to the absolute value ($500 + |h|$). A reported `00520` indicates $-20\text{ gpm}$.
+  - **Below-sea-level heights**: When a standard isobaric surface lies below sea level (in practice 1000 hPa), 500 is added to the absolute value of its geopotential ($500 + |h|$). A reported `00520` indicates $-20\text{ gpm}$.
 
 ### 4.4 Temperature Group: `TTT` (WMO Code Table 3931)
 The 3-digit group `TTT` represents dry-bulb temperature in degrees Celsius:
@@ -92,16 +93,16 @@ The 3-digit group `TTT` represents dry-bulb temperature in degrees Celsius:
 The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 - **Codes `00` through `50`**: Depression from $0.0^\circ\text{C}$ to $5.0^\circ\text{C}$ in tenths of a degree ($DD / 10.0$).
   - *Example*: `24` $\implies \Delta T = 2.4^\circ\text{C}$. Dewpoint $T_d = 21.2 - 2.4 = 18.8^\circ\text{C}$.
+- **Codes `51` through `55`**: Not used.
 - **Codes `56` through `99`**: Depression from $6^\circ\text{C}$ to $49^\circ\text{C}$ in whole degrees ($DD - 50$).
   - *Example*: `65` $\implies \Delta T = 65 - 50 = 15^\circ\text{C}$.
-  - `99` indicates a depression of $49^\circ\text{C}$ or more (extremely dry air).
 - **Code `//`**: Moisture sensor frozen or missing.
 
 ### 4.6 Wind Group: `ddfff` (WMO Regulations 35.2.4.4 & 12.3.4.1)
 - `dd`: Wind direction in tens of degrees ($01 = 10^\circ, 36 = 360^\circ$).
   - `00`: Calm wind ($fff = 000$).
   - `99`: **Variable wind**. Direction is marked as `NaN` in `df_main` while speed is preserved.
-- `fff`: Wind speed in knots.
+- `fff`: Wind speed in the units given by `YY` (knots if `YY` > 50, otherwise m/s).
   - **The 5-Degree Rule**: WMO encodes the $5^\circ$ unit digit of wind direction by adding $500$ to the wind speed $fff$.
   - *Case A ($fff < 500$)*: Units digit of direction is $0$. Direction is $dd \times 10$, speed is $fff$.
   - *Case B ($fff \ge 500$)*: Units digit of direction is $5$. Direction is $dd \times 10 + 5$, speed is $fff - 500$.
@@ -116,17 +117,17 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 
 ### 4.8 Tropopause Group: `88PtPtPt TtTtTt dtdtftft`
 - `88`: Tropopause indicator group (`88999` indicates no tropopause was observed).
-- `PtPtPt`: Pressure of the tropopause level in hPa.
+- `PtPtPt`: Pressure of the tropopause level: whole hPa in Part A, **tenths of hPa in Part C** (e.g., `88906` in `TTCC` = $90.6\text{ hPa}$).
 - `TtTtTt`: Temperature and dew-point depression at the tropopause.
 - `dtdtftft`: Wind direction and speed at the tropopause.
 
 ### 4.9 Maximum Wind Level: `77PmPmPm dmdmfmfmfm 4vbvbvava`
 - `77` (or `66`): Maximum wind indicator group (`77999` indicates maximum wind was not determined).
-- `PmPmPm`: Pressure of the maximum wind level in hPa.
+- `PmPmPm`: Pressure of the maximum wind level: whole hPa in Part A, **tenths of hPa in Part C**.
 - `dmdmfmfmfm`: Direction and speed of the maximum wind (subject to the same $+500$ speed addition rule for $5^\circ$ directional resolution).
 - `4vbvbvava`: Vertical wind shear group (optional):
-  - `vbvb`: Wind shear in the $1\text{ km}$ layer below the maximum wind level (knots).
-  - `vava`: Wind shear in the $1\text{ km}$ layer above the maximum wind level (knots).
+  - `vbvb`: Absolute vector difference between the maximum wind and the wind $1\text{ km}$ below it (units given by `YY`).
+  - `vava`: Absolute vector difference between the maximum wind and the wind $1\text{ km}$ above it (units given by `YY`).
 
 ### 4.10 Cloud Layer Group: `41414 Nh CL h CM CH`
 - `41414`: Section identifier for cloud data.
@@ -143,6 +144,9 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 - `sasa`: Wind-tracking technique (Code Table 3872; e.g., GPS, Radar, Radiotheodolite).
 - `8GGgg`: Actual radiosonde launch time in hours (`GG`) and minutes (`gg`) UTC.
 
+### 4.12 Regional and National Sections: `51515` … `59595`, `61616` … `69696`
+- Section 9 (regional) and Section 10 (national) are the last sections of every part. Their groups follow regional or national rules and are **not decoded**; the decoder stops reading the part at the first of these indicators.
+
 ---
 
 ## 5. Thermodynamics & Vertical Processing Methodology
@@ -151,6 +155,7 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 Atmospheric pressure decreases exponentially with height in accordance with the barometric equation ($P(z) = P_0 e^{-z / H}$). On thermodynamic charts such as the **Skew-T / Log-P** diagram:
 - Temperature and dewpoint vary approximately linearly with the **natural logarithm of pressure** ($\ln P$).
 - Missing intermediate levels in `df_main` are interpolated with respect to $\ln P$, preventing artificial distortions caused by linear interpolation in Cartesian pressure space.
+- Only gaps **between** reported values are filled. Nothing is extrapolated below the lowest or above the highest report: winds or dew points missing at the top of the sounding stay missing.
 
 ### 5.2 Vector Wind Interpolation
 Interpolating wind direction and speed directly as scalar numbers creates severe mathematical artifacts (e.g., averaging $350^\circ$ and $10^\circ$ scalar numbers produces $180^\circ$ South wind instead of $360^\circ$ North wind).
