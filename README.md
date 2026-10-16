@@ -60,7 +60,15 @@ Real-world atmospheric soundings and teletype GTS transmissions frequently conta
 - **Wind Groups Follow $I_d$**:
   The header's $I_d$ (Code Table 1734) names the last standard level that carries a wind group ($2$ covers $250$ and $200\text{ hPa}$, $1$ covers $150$ and $100\text{ hPa}$; tens of hPa in Part C). Levels above it are read as `PPhhh TTTDD` only, so the next group is never taken for their wind; with $I_d$ = `/` only the surface has a wind group.
 - **Temperatures That Look Like Indicators**:
-  $-66.x$ and $-77.x\,^\circ\text{C}$ (common at $150$ and $100\text{ hPa}$ in the tropics) are coded `66xxx` and `77xxx`, like the maximum wind indicators. The group after `PPhhh` is always read as the temperature; only section markers (`31313`, `41414`, `21212`, `51515`–`59595`, `88999`, `77999`, `66999`) end a level early.
+  $-66.x$ and $-77.x\,^\circ\text{C}$ (common at $150$ and $100\text{ hPa}$ in the tropics) are coded `66xxx` and `77xxx`, like the maximum wind indicators, and `21212` ($21.2\,^\circ\text{C}$) or `31313` ($-31.3\,^\circ\text{C}$) look like section markers. The group after `PPhhh` is read as the temperature by its position; only groups that cannot be a temperature and depression (`88999`, `77999`, `66999`, `41414`, `52525`, `54545`, `55555`, `56565`, `58585`) end a level early.
+- **Maximum Wind Shear**:
+  The cloud section (`41414`) belongs to Part B, so in Parts A and C a `41414` after a maximum wind is the shear group ($14\text{ kt}$ below and above).
+- **Wind Speed Units**:
+  `YY` is the day plus $50$ when speeds are in knots and the day itself when they are in m/s. m/s speeds are converted to knots in `df_main`; `df_special` keeps the reported value and unit (`240/23m/s`).
+- **Regional and National Sections**:
+  `51515`–`59595` and `61616`–`69696` come last in a part; the groups after them are never read as levels (`55555` stays a significant level in Parts B and D, `66666` a maximum wind at $666\text{ hPa}$).
+- **Part B Without Part A**:
+  A `TTBB` decodes on its own: the profile has no heights, which only Parts A and C report. A message with fewer than two temperatures (only the surface) raises `ValueError`.
 - **Part C Special Levels in Tenths of hPa**:
   In `TTCC`, `88PtPtPt` and `77PmPmPm` give the pressure in tenths of a hectopascal (`88906` is $90.6\text{ hPa}$).
 - **Pressures Keep Their Tenths**:
@@ -81,8 +89,8 @@ Real-world atmospheric soundings and teletype GTS transmissions frequently conta
 ## Meteorological Methodology
 
 ### Vertical Interpolation
-- **Temperature & Dewpoint**: Missing intermediate levels are filled via linear interpolation with respect to the **natural logarithm of pressure** ($\ln P$). This aligns with atmospheric thermodynamics on Skew-T / Log-P diagrams where temperature varies approximately linearly with $\ln P$.
-- **Wind Vectors**: Wind speed and direction are decomposed into orthogonal **$U$ (zonal)** and **$V$ (meridional)** vector components. Each component is interpolated independently in $\ln P$ space before being recombined, preventing boundary artifacts across the $0^\circ/360^\circ$ North transition.
+- **Temperature & Dewpoint**: Missing intermediate levels are filled via linear interpolation with respect to the **natural logarithm of pressure** ($\ln P$), only between two observed levels: nothing is extrapolated above the last observation or below the first (a top level reported as `/////` stays empty). This aligns with atmospheric thermodynamics on Skew-T / Log-P diagrams where temperature varies approximately linearly with $\ln P$.
+- **Wind Vectors**: Wind speed and direction are decomposed into orthogonal **$U$ (zonal)** and **$V$ (meridional)** vector components. Each component is interpolated independently in $\ln P$ space (again only between observed winds) before being recombined, preventing boundary artifacts across the $0^\circ/360^\circ$ North transition. A variable wind keeps its speed and no direction.
 
 ### Hypsometric Geopotential Calculation
 Missing geopotential heights are computed using the Hypsometric Equation:

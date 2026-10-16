@@ -185,11 +185,70 @@ def test_temperatures_like_indicators():
     assert top.loc[100.0, "Temp"] == -77.1
 
 
-def test_shear_group_is_not_the_cloud_section():
-    """41414 after a maximum wind starts the cloud section; it is not a 4vbvbvava shear group."""
-    _, df_special = decode("TTAA 73121 83779 77200 27620 41414 86500=", None, None, None)
-    assert "vbvb" not in set(df_special["Symbol"])
-    assert "Nh" in set(df_special["Symbol"])
+def test_41414_after_max_wind_is_shear():
+    """The cloud section is in part B only: in part A, 41414 after a maximum wind is 14/14 kt shear."""
+    _, df_special = decode("TTAA 73121 83779 77200 27620 41414 31313 42308 81131=", None, None, None)
+    assert specials(df_special)[:4] == [
+        ("TTAA", "PmPmPm", "200hPa"), ("TTAA", "dmdmfmfmfm", "275/120kt"),
+        ("TTAA", "vbvb", "14kt"), ("TTAA", "vava", "14kt"),
+    ]
+    assert ("TTAA", "8GGgg", "11:31") in specials(df_special)
+
+
+def test_temperatures_like_section_markers():
+    """21212 (21.2 C) at 925 hPa and 31313 (-31.3 C) at 300 hPa are temperatures in part A."""
+    ttaa = TTAA_CG.replace("92793 17837", "92793 21212").replace("30966 34926", "30966 31313")
+    df_main, _ = decode(ttaa, None, None, None)
+    top = df_main.set_index("Pressure")
+    assert (top.loc[925.0, "Temp"], top.loc[925.0, "DewPoint"]) == (21.2, 20.0)
+    assert (top.loc[300.0, "Temp"], top.loc[300.0, "DewPoint"]) == (-31.3, -32.6)
+    assert top.loc[300.0, "WindDir"] == 225.0
+
+
+def test_wind_speeds_in_mps():
+    """YY without 50 added (day 30): speeds are in m/s, converted to knots in df_main."""
+    ttaa = TTAA_CG.replace("TTAA 80121", "TTAA 30121")
+    df_main, df_special = decode(ttaa, None, None, None)
+    assert df_main.set_index("Pressure").loc[700.0, "WindSpeed"] == round(28 * 3600 / 1852, 1)
+    assert ("TTAA", "dmdmfmfmfm", "240/83m/s") in specials(df_special)
+
+
+def test_regional_section_ends_level_data():
+    """51515 groups (US style) are not levels, in part A or in part B."""
+    ttbb = "TTBB 80128 83612 00951 16805 11931 16420 21212 00951 09017 11940 08543 51515 10164 00098 10194 22513 27015="
+    df_main, _ = decode(TTAA_CG.replace("31313", "51515 10164 00098 10194 22513 27015 31313"), ttbb, None, None)
+    assert 513.0 not in set(df_main["Pressure"])
+    assert 1098.0 not in set(df_main["Pressure"])
+    assert df_main.set_index("Pressure").loc[100.0, "WindSpeed"] == 9.0
+
+
+def test_ttbb_alone():
+    """A TTBB without its TTAA decodes: no heights, but the temperature profile."""
+    ttbb = "TTBB 80128 83612 00951 16805 11931 16420 22911 19041 33899 18035 21212 00951 09017 11940 08543="
+    df_main, _ = decode(None, ttbb, None, None)
+    assert list(df_main["Pressure"]) == [951.0, 940.0, 931.0, 911.0, 899.0]
+    assert df_main["Height"].isna().all()
+
+
+def test_surface_only_is_an_error():
+    with pytest.raises(ValueError, match="without temperatures above the surface"):
+        decode("TTAA 5900/ 83899 99017 20240 27003 88999 77999=", None, None, None)
+
+
+def test_nothing_made_up_above_the_last_observation():
+    """50 hPa reported as ///// with no wind group (Id 7) keeps no temperature and no wind."""
+    ttcc = "TTCC 73127 83746 70865 76164 12006 50064 ///// 88999 77999="
+    df_main, _ = decode(TTAA_CG, None, ttcc, None)
+    row = df_main.set_index("Pressure").loc[50.0]
+    assert row[["Temp", "DewPoint", "WindDir", "WindSpeed"]].isna().all()
+
+
+def test_variable_wind_keeps_no_direction():
+    """dd = 99 between two directional winds keeps its speed and no direction."""
+    ttaa = TTAA_CG.replace("85521 17434 00514", "85521 17434 99014")
+    df_main, _ = decode(ttaa, None, None, None)
+    row = df_main.set_index("Pressure").loc[850.0]
+    assert np.isnan(row["WindDir"]) and row["WindSpeed"] == 14.0
 
 
 def test_wind_groups_follow_id():
