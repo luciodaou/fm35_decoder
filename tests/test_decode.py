@@ -129,3 +129,169 @@ def test_type_safety_input_validation():
     """Verify non-string arguments raise TypeError."""
     with pytest.raises(TypeError, match="must be a string or None"):
         decode(12345, None, None, None)
+
+
+TTAA_CG = (
+    "TTAA 80121 83612 99951 16805 09017 00122 ///// ///// 92793 17837 07545 85521 17434 00514 "
+    "70157 08400 29028 50587 05704 26019 40758 17910 25022 30966 34926 22516 25091 44340 20022 "
+    "20237 55934 23524 15417 66562 24581 10662 77161 19509 88999 77146 24083 43131 31313 42308 81137="
+)
+
+
+def specials(df_special):
+    return [tuple(r) for r in df_special[["Part", "Symbol", "Value"]].itertuples(index=False)]
+
+
+def test_part_c_special_pressures_in_tenths():
+    """88/77 groups in Part C give the pressure in tenths of hPa."""
+    ttcc = "TTCC 80123 83612 70873 72159 27518 50079 64561 05504 30399 57761 06507 88860 75559 24004 77650 25070 41012="
+    _, df_special = decode(None, None, ttcc, None)
+    rows = specials(df_special)
+    assert ("TTCC", "PtPtPt", "86.0hPa") in rows
+    assert ("TTCC", "PmPmPm", "65.0hPa") in rows
+
+
+def test_specials_name_their_part():
+    """A tropopause in Part A and another in Part C are both kept, each with its part."""
+    ttcc = "TTCC 80123 83612 70873 72159 27518 88906 77162 26018 77999 31313 42308 81137="
+    ttaa = TTAA_CG.replace("88999", "88110 75362 30027")
+    _, df_special = decode(ttaa, None, ttcc, None)
+    trop = df_special[df_special["Symbol"] == "PtPtPt"]
+    assert list(zip(trop["Part"], trop["Value"])) == [("TTAA", "110hPa"), ("TTCC", "90.6hPa")]
+    # the 31313 section, identical in both parts, is listed once
+    assert (df_special["Symbol"] == "8GGgg").sum() == 1
+
+
+def test_repeated_max_wind_rows_kept():
+    """Two maximum wind levels with the same wind keep all their rows."""
+    ttaa = TTAA_CG.replace("43131", "43131 66120 24083 43131")
+    _, df_special = decode(ttaa, None, None, None)
+    assert list(df_special[df_special["Subject"] == "Max Wind"]["Value"]) == [
+        "146hPa", "240/83kt", "31kt", "31kt", "120hPa", "240/83kt", "31kt", "31kt",
+    ]
+
+
+def test_31313_without_sonde_group():
+    """31313 followed directly by 8GGgg reads it as the launch time, not as the sonde group."""
+    _, special = parse_ttaa_ttcc("TTAA 80121 83612 99951 16805 09017 31313 81137=")
+    assert [(s["Symbol"], s["Value"]) for s in special] == [("8GGgg", "11:37")]
+
+
+def test_temperatures_like_indicators():
+    """-66.5 C at 150 hPa (66562) and -77.1 C at 100 hPa (77161) are temperatures."""
+    df_main, _ = decode(TTAA_CG, None, None, None)
+    top = df_main.set_index("Pressure")
+    assert top.loc[150.0, "Temp"] == -66.5
+    assert top.loc[100.0, "Temp"] == -77.1
+
+
+def test_41414_after_max_wind_is_shear():
+    """The cloud section is in part B only: in part A, 41414 after a maximum wind is 14/14 kt shear."""
+    _, df_special = decode("TTAA 73121 83779 77200 27620 41414 31313 42308 81131=", None, None, None)
+    assert specials(df_special)[:4] == [
+        ("TTAA", "PmPmPm", "200hPa"), ("TTAA", "dmdmfmfmfm", "275/120kt"),
+        ("TTAA", "vbvb", "14kt"), ("TTAA", "vava", "14kt"),
+    ]
+    assert ("TTAA", "8GGgg", "11:31") in specials(df_special)
+
+
+def test_temperatures_like_section_markers():
+    """21212 (21.2 C) at 925 hPa and 31313 (-31.3 C) at 300 hPa are temperatures in part A."""
+    ttaa = TTAA_CG.replace("92793 17837", "92793 21212").replace("30966 34926", "30966 31313")
+    df_main, _ = decode(ttaa, None, None, None)
+    top = df_main.set_index("Pressure")
+    assert (top.loc[925.0, "Temp"], top.loc[925.0, "DewPoint"]) == (21.2, 20.0)
+    assert (top.loc[300.0, "Temp"], top.loc[300.0, "DewPoint"]) == (-31.3, -32.6)
+    assert top.loc[300.0, "WindDir"] == 225.0
+
+
+def test_wind_speeds_in_mps():
+    """YY without 50 added (day 30): speeds are in m/s, converted to knots in df_main."""
+    ttaa = TTAA_CG.replace("TTAA 80121", "TTAA 30121")
+    df_main, df_special = decode(ttaa, None, None, None)
+    assert df_main.set_index("Pressure").loc[700.0, "WindSpeed"] == round(28 * 3600 / 1852, 1)
+    assert ("TTAA", "dmdmfmfmfm", "240/83m/s") in specials(df_special)
+
+
+def test_regional_section_ends_level_data():
+    """51515 groups (US style) are not levels, in part A or in part B."""
+    ttbb = "TTBB 80128 83612 00951 16805 11931 16420 21212 00951 09017 11940 08543 51515 10164 00098 10194 22513 27015="
+    df_main, _ = decode(TTAA_CG.replace("31313", "51515 10164 00098 10194 22513 27015 31313"), ttbb, None, None)
+    assert 513.0 not in set(df_main["Pressure"])
+    assert 1098.0 not in set(df_main["Pressure"])
+    assert df_main.set_index("Pressure").loc[100.0, "WindSpeed"] == 9.0
+
+
+def test_ttbb_alone():
+    """A TTBB without its TTAA decodes: no heights, but the temperature profile."""
+    ttbb = "TTBB 80128 83612 00951 16805 11931 16420 22911 19041 33899 18035 21212 00951 09017 11940 08543="
+    df_main, _ = decode(None, ttbb, None, None)
+    assert list(df_main["Pressure"]) == [951.0, 940.0, 931.0, 911.0, 899.0]
+    assert df_main["Height"].isna().all()
+
+
+def test_surface_only_is_an_error():
+    with pytest.raises(ValueError, match="without temperatures above the surface"):
+        decode("TTAA 5900/ 83899 99017 20240 27003 88999 77999=", None, None, None)
+
+
+def test_nothing_made_up_above_the_last_observation():
+    """50 hPa reported as ///// with no wind group (Id 7) keeps no temperature and no wind."""
+    ttcc = "TTCC 73127 83746 70865 76164 12006 50064 ///// 88999 77999="
+    df_main, _ = decode(TTAA_CG, None, ttcc, None)
+    row = df_main.set_index("Pressure").loc[50.0]
+    assert row[["Temp", "DewPoint", "WindDir", "WindSpeed"]].isna().all()
+
+
+def test_variable_wind_keeps_no_direction():
+    """dd = 99 between two directional winds keeps its speed and no direction."""
+    ttaa = TTAA_CG.replace("85521 17434 00514", "85521 17434 99014")
+    df_main, _ = decode(ttaa, None, None, None)
+    row = df_main.set_index("Pressure").loc[850.0]
+    assert np.isnan(row["WindDir"]) and row["WindSpeed"] == 14.0
+
+
+def test_wind_groups_follow_id():
+    """Id = / : only the surface has a wind group, so no level is skipped or given a made-up wind."""
+    ttaa = (
+        "TTAA 8012/ 83612 99951 16805 ///// 00122 ///// 92793 17837 85521 17434 70157 08400 "
+        "50587 05704 40758 17910 30966 34926 25091 44340 20237 55934 15417 62562 10662 69961 88999 77999="
+    )
+    df_main, _ = decode(ttaa, None, None, None)
+    assert list(df_main["Pressure"]) == [1000.0, 951.0, 925.0, 850.0, 700.0, 500.0, 400.0, 300.0, 250.0, 200.0, 150.0, 100.0]
+    assert df_main["WindSpeed"].isna().all()
+
+
+def test_level_without_wind_keeps_the_tropopause():
+    """Id = 3 in Part C: 20 hPa has no wind group, so the 88 group after it is the tropopause."""
+    ttcc = "TTCC 64003 83827 70871 67374 29024 50077 61978 22509 30397 56582 26016 20656 ///// 88823 73566 27028 77999="
+    df_main, df_special = decode(None, None, ttcc, None)
+    assert 20.0 in set(df_main["Pressure"])
+    assert ("TTCC", "PtPtPt", "82.3hPa") in specials(df_special)
+    assert ("TTCC", "dtdtftft", "270/28kt") in specials(df_special)
+
+
+def test_header_with_slash_skips_station_number():
+    """TTDD YYGG/ IIiii: the station number (here 11035) is not read as a significant level."""
+    levels, _ = parse_ttbb_ttdd("TTDD 6612/ 11035 11860 75559 22781 68361=")
+    assert [lvl["Pressure"] for lvl in levels] == [86.0, 78.1]
+
+
+def test_pressures_keep_tenths():
+    """Part D levels keep their tenths of hPa and are not merged with nearby levels."""
+    ttcc = "TTCC 80121 83612 70873 72159 27518 10662 66962 19509="
+    ttdd = "TTDD 8012/ 83612 11707 72159 22700 72561 33104 66560 44100 66962="
+    df_main, _ = decode(None, None, ttcc, ttdd)
+    assert list(df_main["Pressure"]) == [70.7, 70.0, 10.4, 10.0]
+
+
+def test_bulletin_in_every_argument():
+    """A whole bulletin passed for every part decodes like the parts passed separately."""
+    ttbb = "TTBB 80128 83612 00951 16805 11931 16420 22911 19041 21212 00951 09017 11940 08543="
+    ttcc = "TTCC 80123 83612 70873 72159 27518 88860 75559 24004 77999="
+    bulletin = " ".join([TTAA_CG, ttbb, ttcc])
+    split_main, split_special = decode(TTAA_CG, ttbb, ttcc, None)
+    for args in [(bulletin, None, None, None), (bulletin, bulletin, bulletin, bulletin)]:
+        df_main, df_special = decode(*args)
+        pd.testing.assert_frame_equal(df_main, split_main)
+        pd.testing.assert_frame_equal(df_special, split_special)

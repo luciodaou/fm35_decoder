@@ -6,6 +6,7 @@ Decodes standard WMO FM 35 / FM 36 / FM 38 upper-air radiosonde observations.
 from __future__ import annotations
 
 import functools
+import math
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -248,7 +249,8 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
             mask = df[col].isna()
-            df[col] = df[col].interpolate(method="index")
+            # only between observed levels: nothing is made up above the last or below the first
+            df[col] = df[col].interpolate(method="index", limit_area="inside")
             df.loc[mask, col] = df.loc[mask, col].round(1)
 
     # Physical constraint: Dewpoint cannot exceed dry temperature
@@ -272,8 +274,8 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
         df.loc[valid_wind, "v"] = -df.loc[valid_wind, "WindSpeed"] * np.cos(rads)
 
         # Interpolate U and V components across vertical profile
-        df["u"] = df["u"].interpolate(method="index")
-        df["v"] = df["v"].interpolate(method="index")
+        df["u"] = df["u"].interpolate(method="index", limit_area="inside")
+        df["v"] = df["v"].interpolate(method="index", limit_area="inside")
 
         # Reconstruct speed and direction
         reconstructed_speed = np.sqrt(df["u"] ** 2 + df["v"] ** 2)
@@ -287,9 +289,10 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
             reconstructed_dir,
         )
 
-        # Fill missing values in original columns
+        # Fill missing values in original columns; a variable wind (speed without direction) keeps
+        # its NaN direction
         missing_speed = df["WindSpeed"].isna() & df["u"].notna()
-        missing_dir = df["WindDir"].isna() & df["u"].notna()
+        missing_dir = df["WindDir"].isna() & df["WindSpeed"].isna() & df["u"].notna()
 
         df.loc[missing_speed, "WindSpeed"] = reconstructed_speed[missing_speed].round(1)
         df.loc[missing_dir, "WindDir"] = pd.Series(reconstructed_dir, index=df.index)[missing_dir].round(0)
@@ -456,8 +459,8 @@ def decode_31313_group(
     i = start_index
     results: List[Dict[str, Any]] = []
 
-    # Check next group: sr rara sasa
-    if i + 1 < len(groups) and len(groups[i + 1]) == 5:
+    # Check next group: sr rara sasa (sr is 0-7 or /, so an 8GGgg group is not taken for it)
+    if i + 1 < len(groups) and len(groups[i + 1]) == 5 and groups[i + 1][0] in "01234567/":
         grp = groups[i + 1]
         sr, rara, sasa = grp[0], grp[1:3], grp[3:5]
         results.append(
@@ -493,6 +496,121 @@ def decode_31313_group(
 def clean_message(message: str) -> str:
     """Normalizes message string by removing equals signs and standardizing whitespace."""
     return message.replace("=", "").strip()
+
+
+PART_NAMES = ("TTAA", "TTBB", "TTCC", "TTDD")
+
+KT_PER_MS = 3600.0 / 1852.0
+
+# Groups that cannot be a TTTDD group: "not observed" markers, and section markers whose digits
+# give an impossible temperature or an unused depression code. The other markers are valid TTTDD
+# groups (21212 = 21.2 C, 31313 = -31.3 C, 51515 = -51.5 C, ...), read as data where the position
+# in the message says so; temperatures of -66 and -77 C likewise start like the 66/77 indicators.
+_NOT_TEMP = frozenset(["88999", "77999", "66999", "41414", "52525", "54545", "55555", "56565", "58585"])
+
+# Regional (51515-59595) and national (61616-69696) sections come last in a part: no level data
+# follows them. 55555 and 66666 are not in the list: in parts B and D 55555 is a significant level
+# (55, 555 hPa), and in parts A and C 66666 is a maximum wind at 666 hPa.
+_END_SECTIONS = frozenset(
+    ["51515", "52525", "53535", "54545", "56565", "57575", "58585", "59595"]
+    + ["61616", "62626", "63636", "64646", "65656", "67676", "68686", "69696"]
+)
+
+
+def _is_temp_group(g: Optional[str]) -> bool:
+    """A TTTDD group: five characters that can be a temperature and depression."""
+    return g is not None and len(g) == 5 and g not in _NOT_TEMP
+
+
+def _is_wind_group(g: Optional[str]) -> bool:
+    """A ddfff group: missing (with "/") or a valid direction (00-36, 99); 31313 is the section."""
+    return g is not None and len(g) == 5 and g != "31313" and ("/" in g or decode_wind(g)[1] is not None)
+
+
+def speed_unit(date_group: str) -> str:
+    """YY of YYGGId / YYGGa4: the day plus 50 when wind speeds are in knots, the day for m/s."""
+    return "m/s" if 1 <= int(date_group[:2]) <= 31 else "kt"
+
+
+def _to_knots(speed: Optional[float], unit: str) -> Optional[float]:
+    if speed is None or unit == "kt":
+        return speed
+    return round(speed * KT_PER_MS, 1)
+
+
+def _wind_text(wd: float, ws: float, unit: str) -> str:
+    """A wind as reported, in the message's unit."""
+    return f"VRB/{int(ws)}{unit}" if np.isnan(wd) else f"{int(wd)}/{int(ws)}{unit}"
+
+
+def _skip_to_header(groups: List[str], i: int, headers: Tuple[str, ...]) -> int:
+    """Index of the next part header (or the end) after a regional or national section."""
+    i += 1
+    while i < len(groups) and groups[i] not in headers:
+        i += 1
+    return i
+
+
+def wind_top_pressure(id_char: str, part_c: bool) -> Optional[float]:
+    """
+    Id (code table 1734): pressure of the last standard level that carries a wind group, in
+    hundreds of hPa in Part A (0 = 1000, 9 = 925, 8 = 850) and tens of hPa in Part C. Levels
+    above it have no wind group (Id 2 covers 250 and 200 hPa, Id 1 covers 150 and 100 hPa).
+    "/" (no wind at any standard level) gives infinity; anything else gives None (unknown).
+    """
+    if id_char == "/":
+        return math.inf
+    if len(id_char) != 1 or id_char not in "0123456789":
+        return None
+    d = int(id_char)
+    if part_c:
+        return 100.0 if d == 0 else d * 10.0
+    return {0: 1000.0, 9: 925.0, 8: 850.0}.get(d, d * 100.0)
+
+
+def split_bulletin(text: Optional[str]) -> Dict[str, str]:
+    """
+    Splits a bulletin holding several parts into {"TTAA": "TTAA ...", ...}, each part running up
+    to the next part's name. A part found twice keeps the later text.
+    """
+    if not text:
+        return {}
+    matches = list(re.finditer(r"\b(TTAA|TTBB|TTCC|TTDD)\b", text))
+    parts: Dict[str, str] = {}
+    for k, m in enumerate(matches):
+        end = matches[k + 1].start() if k + 1 < len(matches) else len(text)
+        parts[m.group(1)] = text[m.start() : end].strip()
+    return parts
+
+
+def route_parts(
+    ttaa: Optional[str] = None,
+    ttbb: Optional[str] = None,
+    ttcc: Optional[str] = None,
+    ttdd: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    The text of each part. A message holding several parts (a whole bulletin) is split: its
+    part with the argument's name is used there and the others fill the parts not given on
+    their own. A message without any part name is used as it is.
+    """
+    routed: Dict[str, str] = {}
+    found: Dict[str, str] = {}
+    for name, msg in zip(PART_NAMES, (ttaa, ttbb, ttcc, ttdd)):
+        if not msg or not isinstance(msg, str):
+            continue
+        split = split_bulletin(msg)
+        if not split:
+            routed[name] = msg
+            continue
+        if name in split:
+            routed[name] = split[name]
+        for other, body in split.items():
+            if other != name:
+                found.setdefault(other, body)
+    for name, body in found.items():
+        routed.setdefault(name, body)
+    return routed
 
 
 def parse_ttaa_ttcc(
@@ -537,99 +655,117 @@ def parse_ttaa_ttcc(
 
     is_ttcc = "TTCC" in message
     standard_levels = standard_levels_ttcc if is_ttcc else standard_levels_ttaa
+    # Pressure of the last standard level with a wind group (Id), None without a header
+    wind_top: Optional[float] = None
+    unit = "kt"
+
+    def group(k: int) -> Optional[str]:
+        return groups[k] if k < len(groups) else None
+
+    def special_pressure(code: str) -> Optional[str]:
+        """PPP of an 88/77/66 group: whole hPa in Part A, tenths of hPa in Part C."""
+        try:
+            p_raw = int(code)
+        except ValueError:
+            return None
+        return f"{round(p_raw / 10.0, 1)}" if is_ttcc else f"{p_raw}"
 
     i = 0
     while i < len(groups):
         g = groups[i]
 
-        # Header skip (TTAA/TTCC + YYGGId + IIiii)
-        if re.match(r"^(TTAA|TTCC)$", g):
+        # Header (TTAA/TTCC + YYGGId + IIiii)
+        if g in ("TTAA", "TTCC"):
+            is_ttcc = g == "TTCC"
+            standard_levels = standard_levels_ttcc if is_ttcc else standard_levels_ttaa
+            wind_top = None
             i += 1
-            if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
+            if i < len(groups) and re.match(r"^[0-9]{4}[0-9/]$", groups[i]):
+                wind_top = wind_top_pressure(groups[i][4], is_ttcc)
+                unit = speed_unit(groups[i])
                 i += 1
-            if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
+            if i < len(groups) and re.match(r"^[0-9]{5}$", groups[i]):
                 i += 1
             continue
 
-        # Tropopause (88PtPtPt)
+        # Tropopause (88PtPtPt TtTtTaDtDt dtdtftftft)
         if g.startswith("88") and len(g) == 5:
             if g == "88999":
                 i += 1
                 continue
-            try:
-                pressure = int(g[2:])
-                special_data.append(
-                    {"Symbol": "PtPtPt", "Subject": "Tropopause", "Description": "Pressure", "Value": f"{pressure}hPa"}
-                )
-
-                t_grp = groups[i + 1] if i + 1 < len(groups) else None
-                w_grp = groups[i + 2] if i + 2 < len(groups) else None
-
-                if t_grp and len(t_grp) == 5:
-                    t = decode_temperature(t_grp[:3], tables=cloud_tables)
-                    d = decode_dewpoint_depression(t_grp[3:], tables=cloud_tables)
-                    if t is not None:
-                        special_data.append(
-                            {"Symbol": "TtTtTt", "Subject": "Tropopause", "Description": "Temperature", "Value": f"{t}C"}
-                        )
-                    if t is not None and d is not None:
-                        dw = calculate_dewpoint(t, d)
-                        special_data.append(
-                            {"Symbol": "DtDt", "Subject": "Tropopause", "Description": "Dewpoint", "Value": f"{dw}C"}
-                        )
-
-                if w_grp and len(w_grp) == 5:
+            pressure = special_pressure(g[2:])
+            i += 1
+            if pressure is None:
+                continue
+            special_data.append(
+                {"Symbol": "PtPtPt", "Subject": "Tropopause", "Description": "Pressure", "Value": f"{pressure}hPa"}
+            )
+            t_grp = group(i)
+            if _is_temp_group(t_grp):
+                t = decode_temperature(t_grp[:3], tables=cloud_tables)
+                d = decode_dewpoint_depression(t_grp[3:], tables=cloud_tables)
+                if t is not None:
+                    special_data.append(
+                        {"Symbol": "TtTtTt", "Subject": "Tropopause", "Description": "Temperature", "Value": f"{t}C"}
+                    )
+                if t is not None and d is not None:
+                    dw = calculate_dewpoint(t, d)
+                    special_data.append(
+                        {"Symbol": "DtDt", "Subject": "Tropopause", "Description": "Dewpoint", "Value": f"{dw}C"}
+                    )
+                i += 1
+                w_grp = group(i)
+                if _is_wind_group(w_grp):
                     wd, ws = decode_wind(w_grp)
                     if ws is not None:
-                        val_str = f"VRB/{int(ws)}kt" if np.isnan(wd) else f"{int(wd)}/{int(ws)}kt"
                         special_data.append(
-                            {"Symbol": "dtdtftft", "Subject": "Tropopause", "Description": "Wind", "Value": val_str}
+                            {
+                                "Symbol": "dtdtftft",
+                                "Subject": "Tropopause",
+                                "Description": "Wind",
+                                "Value": _wind_text(wd, ws, unit),
+                            }
                         )
+                    i += 1
+            continue
 
-                i += 3
-                continue
-            except (ValueError, IndexError):
-                i += 1
-                continue
-
-        # Maximum Wind Level (77PmPmPm or 66PmPmPm)
+        # Maximum Wind Level (77PmPmPm or 66PmPmPm, dmdmfmfmfm, optional 4vbvbvava)
         if (g.startswith("77") or g.startswith("66")) and len(g) == 5:
             if g in ["77999", "66999"]:
                 i += 1
                 continue
-            try:
-                pressure = int(g[2:])
-                special_data.append(
-                    {"Symbol": "PmPmPm", "Subject": "Max Wind", "Description": "Pressure", "Value": f"{pressure}hPa"}
-                )
-
-                wind_grp = groups[i + 1] if i + 1 < len(groups) else None
-                if wind_grp and len(wind_grp) == 5:
-                    wd, ws = decode_wind(wind_grp)
-                    if ws is not None:
-                        val_str = f"VRB/{int(ws)}kt" if np.isnan(wd) else f"{int(wd)}/{int(ws)}kt"
-                        special_data.append(
-                            {"Symbol": "dmdmfmfmfm", "Subject": "Max Wind", "Description": "Wind", "Value": val_str}
-                        )
-
-                i_next = i + 2
-                # Check for vertical wind shear group: 4vbvbvava
-                if i_next < len(groups) and groups[i_next].startswith("4") and len(groups[i_next]) == 5:
-                    shear_grp = groups[i_next]
+            pressure = special_pressure(g[2:])
+            i += 1
+            if pressure is None:
+                continue
+            special_data.append(
+                {"Symbol": "PmPmPm", "Subject": "Max Wind", "Description": "Pressure", "Value": f"{pressure}hPa"}
+            )
+            wind_grp = group(i)
+            if _is_wind_group(wind_grp):
+                wd, ws = decode_wind(wind_grp)
+                if ws is not None:
+                    special_data.append(
+                        {
+                            "Symbol": "dmdmfmfmfm",
+                            "Subject": "Max Wind",
+                            "Description": "Wind",
+                            "Value": _wind_text(wd, ws, unit),
+                        }
+                    )
+                i += 1
+                # Vertical wind shear group: 4vbvbvava (41414 too: the cloud section is in part B only)
+                shear_grp = group(i)
+                if shear_grp is not None and len(shear_grp) == 5 and shear_grp.startswith("4"):
                     vb, va = shear_grp[1:3], shear_grp[3:5]
                     special_data.append(
-                        {"Symbol": "vbvb", "Subject": "Max Wind", "Description": "Shear Below", "Value": f"{vb}kt"}
+                        {"Symbol": "vbvb", "Subject": "Max Wind", "Description": "Shear Below", "Value": f"{vb}{unit}"}
                     )
                     special_data.append(
-                        {"Symbol": "vava", "Subject": "Max Wind", "Description": "Shear Above", "Value": f"{va}kt"}
+                        {"Symbol": "vava", "Subject": "Max Wind", "Description": "Shear Above", "Value": f"{va}{unit}"}
                     )
-                    i_next += 1
-
-                i = i_next
-                continue
-            except (ValueError, IndexError):
-                i += 1
-                continue
+                    i += 1
+            continue
 
         # Regional / Instrumentation group 31313
         if g == "31313":
@@ -648,12 +784,15 @@ def parse_ttaa_ttcc(
                 i += 1
             continue
 
-        # Regional groups to skip
-        if g.startswith(("51515", "52525", "53535", "54545", "55555", "56565", "57575", "58585", "59595", "21212")):
+        # Regional and national sections end the level data
+        if g in _END_SECTIONS or g == "55555":
+            i = _skip_to_header(groups, i, ("TTAA", "TTCC"))
+            continue
+        if g == "21212":
             i += 1
             continue
 
-        # Mandatory Standard Isobaric Levels (PPhhh)
+        # Mandatory Standard Isobaric Levels (PPhhh TTTDD, then dddff up to the level Id names)
         if len(g) == 5 and g[:2] in standard_levels:
             pp = g[:2]
             pressure, height = None, None
@@ -672,30 +811,30 @@ def parse_ttaa_ttcc(
                     pass
 
             if pressure is not None:
-                t_group = groups[i + 1] if i + 1 < len(groups) else None
-                w_group = groups[i + 2] if i + 2 < len(groups) else None
                 dp: Dict[str, Any] = {"Pressure": float(pressure), "Source": "Standard"}
                 if height is not None:
                     dp["Height"] = height
+                # The surface always has a wind group (///// when missing)
+                has_wind = pp == "99" or wind_top is None or pressure >= wind_top
 
-                valid = False
-                indicators = ("88", "77", "66", "51515", "31313", "41414")
-                if t_group and len(t_group) == 5 and not t_group.startswith(indicators):
+                k = i + 1
+                t_group = group(k)
+                if _is_temp_group(t_group):
                     t = decode_temperature(t_group[:3], tables=cloud_tables)
                     d = decode_dewpoint_depression(t_group[3:], tables=cloud_tables)
                     dp["Temp"] = t
                     dp["DewPoint"] = calculate_dewpoint(t, d)
-                    valid = True
+                    k += 1
+                    w_group = group(k)
+                    if has_wind and _is_wind_group(w_group):
+                        wd, ws = decode_wind(w_group)
+                        dp["WindDir"] = wd
+                        dp["WindSpeed"] = _to_knots(ws, unit)
+                        k += 1
 
-                if w_group and len(w_group) == 5 and not w_group.startswith(indicators):
-                    wd, ws = decode_wind(w_group)
-                    dp["WindDir"] = wd
-                    dp["WindSpeed"] = ws
-                    valid = True
-
-                if valid:
+                if k > i + 1:
                     levels_data.append(dp)
-                    i += 3
+                    i = k
                     continue
 
         i += 1
@@ -717,17 +856,20 @@ def parse_ttbb_ttdd(
     mode = "TEMP"
     is_ttdd = "TTDD" in message
     last_p: Optional[float] = None
+    unit = "kt"
 
     i = 0
     while i < len(groups):
         g = groups[i]
 
-        # Header skip (TTBB/TTDD + YYGGId + IIiii)
+        # Header skip (TTBB/TTDD + YYGGa4 + IIiii; a4 may be "/")
         if re.match(r"^(TTBB|TTDD)$", g):
             is_ttdd = (g == "TTDD")
+            mode = "TEMP"
             last_p = None
             i += 1
-            if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
+            if i < len(groups) and re.match(r"^[0-9]{4}[0-9/]$", groups[i]):
+                unit = speed_unit(groups[i])
                 i += 1
             if i < len(groups) and re.match(r"^\d{5}$", groups[i]):
                 i += 1
@@ -756,8 +898,9 @@ def parse_ttbb_ttdd(
                 i += 1
             continue
 
-        if g == "51515":
-            i += 1
+        # Regional and national sections end the level data
+        if g in _END_SECTIONS:
+            i = _skip_to_header(groups, i, ("TTBB", "TTDD"))
             continue
 
         # Significant Level Group: nnPPP
@@ -812,7 +955,7 @@ def parse_ttbb_ttdd(
                             {
                                 "Pressure": float(pressure),
                                 "WindDir": wd,
-                                "WindSpeed": ws,
+                                "WindSpeed": _to_knots(ws, unit),
                                 "Source": "SigWind",
                             }
                         )
@@ -833,23 +976,18 @@ def merge_data(df_list: List[pd.DataFrame]) -> pd.DataFrame:
     full_df = pd.concat(df_list, ignore_index=True)
     full_df = full_df[full_df["Pressure"].notna() & (full_df["Pressure"] > 0)].copy()
 
-    # Round Pressure to integer
-    full_df["Pressure"] = full_df["Pressure"].round(0).astype(int)
+    # Pressure in tenths of hPa, as Parts C and D report it (whole-hPa rounding merged distinct
+    # levels); rounding for display is left to the caller
+    full_df["Pressure"] = full_df["Pressure"].astype(float).round(1)
 
-    # Combine records by pressure, giving precedence to non-null values
+    # Combine records by pressure, giving precedence to non-null values. A column no part reports
+    # (heights in a lone TTBB, winds without a wind section) is left empty.
+    columns = ["Height", "Temp", "DewPoint", "WindDir", "WindSpeed", "Source"]
     grouped = (
         full_df.groupby("Pressure")
-        .agg(
-            {
-                "Height": "first",
-                "Temp": "first",
-                "DewPoint": "first",
-                "WindDir": "first",
-                "WindSpeed": "first",
-                "Source": "first",
-            }
-        )
+        .agg({c: "first" for c in columns if c in full_df.columns})
         .reset_index()
+        .reindex(columns=["Pressure"] + columns)
     )
 
     if "Height" in grouped.columns:
@@ -869,45 +1007,55 @@ def decode_full(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Decodes full FM 35 radiosonde sounding components (TTAA, TTBB, TTCC, TTDD).
-    Returns (df_main, df_special).
+    Any argument may hold a whole bulletin (see route_parts).
+    Returns (df_main, df_special); df_special's Part column names the part each entry came from.
     """
     cloud_tables = load_wmo_tables()
+    parts = route_parts(ttaa_msg, ttbb_msg, ttcc_msg, ttdd_msg)
 
     data_frames: List[pd.DataFrame] = []
     special_frames: List[pd.DataFrame] = []
 
-    for msg, parser in [
-        (ttaa_msg, parse_ttaa_ttcc),
-        (ttcc_msg, parse_ttaa_ttcc),
-        (ttbb_msg, parse_ttbb_ttdd),
-        (ttdd_msg, parse_ttbb_ttdd),
+    for name, parser in [
+        ("TTAA", parse_ttaa_ttcc),
+        ("TTCC", parse_ttaa_ttcc),
+        ("TTBB", parse_ttbb_ttdd),
+        ("TTDD", parse_ttbb_ttdd),
     ]:
-        if msg and isinstance(msg, str):
+        msg = parts.get(name)
+        if msg:
             lvls, spcls = parser(msg, cloud_tables=cloud_tables)
             if lvls:
                 data_frames.append(pd.DataFrame(lvls))
             if spcls:
-                special_frames.append(pd.DataFrame(spcls))
+                special_frames.append(pd.DataFrame(spcls).assign(Part=name))
 
     df_main = merge_data(data_frames)
+    if not df_main.empty and df_main["Temp"].notna().sum() < 2:
+        raise ValueError("TEMP message without temperatures above the surface")
     df_main = interpolate_data(df_main)
     df_main = calculate_geopotential(df_main)
 
     df_special = pd.concat(special_frames, ignore_index=True) if special_frames else pd.DataFrame()
 
     if not df_special.empty:
-        if {"Symbol", "Subject", "Description", "Value"}.issubset(df_special.columns):
-            df_special = df_special[["Symbol", "Subject", "Description", "Value"]]
+        key = ["Symbol", "Subject", "Description", "Value"]
+        if set(key).issubset(df_special.columns):
+            df_special = df_special[key + ["Part"]]
 
-        df_special = df_special.drop_duplicates()
+        # The 31313 and cloud sections repeat in every part: keep the first copy of each entry.
+        # Tropopause and maximum wind entries are all kept, since each part reports its own.
+        repeated = df_special.duplicated(subset=key) & df_special["Subject"].isin(["Solar/Inst", "Cloud"])
+        df_special = df_special[~repeated]
 
         # Sort Cloud group by standard order: h, Nh, CL, CM, CH
         mask = df_special["Subject"] == "Cloud"
         if mask.any():
             order = {"h": 0, "Nh": 1, "CL": 2, "CM": 3, "CH": 4}
-            clouds = df_special[mask].sort_values(by="Symbol", key=lambda col: col.map(order))
+            clouds = df_special[mask].sort_values(by="Symbol", key=lambda col: col.map(order), kind="stable")
             others = df_special[~mask]
-            df_special = pd.concat([clouds, others], ignore_index=True)
+            df_special = pd.concat([clouds, others])
+        df_special = df_special.reset_index(drop=True)
 
     return df_main, df_special
 
@@ -930,7 +1078,8 @@ def decode(
     Returns:
         tuple[pd.DataFrame, pd.DataFrame]:
             - df_main: Vertical profile with Pressure, Height, Temp, DewPoint, WindDir, WindSpeed.
-            - df_special: Tropopause, Maximum Wind, Cloud layers, and Radiosonde/Solar metadata.
+            - df_special: Tropopause, Maximum Wind, Cloud layers, and Radiosonde/Solar metadata,
+              with the part (TTAA, TTBB, TTCC, TTDD) each entry came from in the Part column.
     """
     # Defensive type validation
     for name, val in [("ttaa", ttaa), ("ttbb", ttbb), ("ttcc", ttcc), ("ttdd", ttdd)]:
