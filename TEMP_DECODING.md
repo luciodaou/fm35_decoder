@@ -58,7 +58,8 @@ A complete radiosonde sounding is divided into four distinct parts:
 - `YYGGId`:
   - `YY`: Day of the month (with 50 added if wind speed is reported in knots; e.g., day 23 reported in knots becomes `73`).
   - `GG`: Observation hour UTC (e.g., `12` = 12:00 UTC, `00` = 00:00 UTC).
-  - `Id`: Indicator for the highest standard level observed and wind units.
+  - `Id` (Code Table 1734): the last standard level that carries a wind group, in hundreds of hPa in Part A (`1` = 100, `2` = 200, …, `8` = 850, `9` = 925, `0` = 1000) and tens of hPa in Part C (`1` = 10, `2` = 20, `3` = 30, `5` = 50, `7` = 70). Every level at or below it has a wind group (`/////` when missing); `2` also covers 250 hPa and `1` also covers 150 hPa. Levels above it have no wind group. `/` means no wind at any standard level: only the surface keeps its wind group.
+  - In Parts B and D the last figure is `a4` (type of measuring equipment) and may be `/`.
 - `IIiii`: WMO Station Identifier (e.g., `83779` for São Paulo, Brazil).
 
 ### 4.2 Surface Level Group: `99PPP TTTDD dddff`
@@ -116,13 +117,13 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 
 ### 4.8 Tropopause Group: `88PtPtPt TtTtTt dtdtftft`
 - `88`: Tropopause indicator group (`88999` indicates no tropopause was observed).
-- `PtPtPt`: Pressure of the tropopause level in hPa.
+- `PtPtPt`: Pressure of the tropopause level, in whole hPa in Part A and **tenths of hPa** in Part C (`88906` = 90.6 hPa). A sounding may report a tropopause in each part.
 - `TtTtTt`: Temperature and dew-point depression at the tropopause.
 - `dtdtftft`: Wind direction and speed at the tropopause.
 
 ### 4.9 Maximum Wind Level: `77PmPmPm dmdmfmfmfm 4vbvbvava`
 - `77` (or `66`): Maximum wind indicator group (`77999` indicates maximum wind was not determined).
-- `PmPmPm`: Pressure of the maximum wind level in hPa.
+- `PmPmPm`: Pressure of the maximum wind level, in whole hPa in Part A and **tenths of hPa** in Part C.
 - `dmdmfmfmfm`: Direction and speed of the maximum wind (subject to the same $+500$ speed addition rule for $5^\circ$ directional resolution).
 - `4vbvbvava`: Vertical wind shear group (optional):
   - `vbvb`: Wind shear in the $1\text{ km}$ layer below the maximum wind level (knots).
@@ -138,7 +139,7 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 
 ### 4.11 Radiosonde Metadata & Release Time: `31313 sr rara sasa 8GGgg`
 - `31313`: Section identifier for instrumentation metadata.
-- `sr`: Solar and infrared radiation correction applied (Code Table 3849).
+- `sr`: Solar and infrared radiation correction applied (Code Table 3849: `0`–`7`, or `/`; a group starting with `8` right after `31313` is the launch time, the sonde group being absent).
 - `rara`: Radiosonde model type (Common Code Table C-2 / Code Table 3685; e.g., Vaisala RS41, Graw DFM-17).
 - `sasa`: Wind-tracking technique (Code Table 3872; e.g., GPS, Radar, Radiotheodolite).
 - `8GGgg`: Actual radiosonde launch time in hours (`GG`) and minutes (`gg`) UTC.
