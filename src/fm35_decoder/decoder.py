@@ -1,6 +1,7 @@
 """
 FM 35-XII TEMP Decoder.
-Decodes standard WMO FM 35 / FM 36 / FM 38 upper-air radiosonde observations.
+Decodes WMO FM 35 TEMP upper-air radiosonde observations from fixed land stations
+(the ship and mobile headers of FM 36 / FM 38 are not read).
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ def decode_temperature(ttt_str: str, tables: Optional[Dict[str, Any]] = None) ->
         tt = int(ttt_str[:2])
         ta_code = ttt_str[2]
 
-        t_table = (tables or WMO_TABLES).get("T_3931", TABLE_T_3931 if "TABLE_T_3931" in globals() else {})
+        t_table = (tables or WMO_TABLES).get("T_3931", {})
         entry = t_table.get(ta_code)
 
         if entry:
@@ -135,7 +136,8 @@ def decode_wind(dff_str: str) -> Tuple[Optional[float], Optional[float]]:
 
     Returns (direction_degrees, speed_knots).
     For variable wind (dd=99), direction is returned as np.nan while speed is preserved.
-    For calm wind (dd=00, fff=000), returns (0.0, 0.0).
+    For calm wind (dd=00, fff=000), returns (0.0, 0.0). dd=00 with a speed (north is 36) is not a
+    direction: the speed is kept and the direction is np.nan.
     """
     if not dff_str or len(dff_str) != 5 or "/////" in dff_str or "/" in dff_str:
         return None, None
@@ -161,6 +163,8 @@ def decode_wind(dff_str: str) -> Tuple[Optional[float], Optional[float]]:
         # Calm wind
         if dd == 0 and speed == 0:
             return 0.0, 0.0
+        if (dd == 0 and direction_unit == 0) or (dd == 36 and direction_unit == 5):
+            return np.nan, float(speed)
 
         direction = dd * 10 + direction_unit
         return float(direction), float(speed)
@@ -219,9 +223,14 @@ def decode_height(pressure: float, h_str: str) -> Optional[int]:
 # --- Atmospheric Thermodynamics & Physics ---
 
 
-def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
+def interpolate_data(
+    df: pd.DataFrame, missing_layers: Optional[List[Tuple[str, float, float]]] = None
+) -> pd.DataFrame:
     """
     Interpolates missing Temperature, DewPoint, and Wind data vertically.
+    - missing_layers: (kind, bottom, top) layers reported as missing (nn/// /////), kind being
+      "Temperature" or "Wind" and the pressures those of the boundary levels; nothing is filled
+      strictly inside them.
     - Temperature/DewPoint: Linear interpolation in Log-Pressure space.
     - Physical bound: Enforces DewPoint <= Temp (no super-saturation).
     - Wind: Vector interpolation (U/V components) in Log-Pressure space.
@@ -244,6 +253,13 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
     df["log_p"] = np.log(df["Pressure"].astype(float))
     df = df.set_index("log_p")
 
+    def in_missing_layer(kind: str) -> pd.Series:
+        inside = pd.Series(False, index=df.index)
+        for layer_kind, bottom, top in missing_layers or ():
+            if layer_kind == kind:
+                inside |= (df["Pressure"] < bottom) & (df["Pressure"] > top)
+        return inside
+
     # --- Temperature & Dewpoint Interpolation ---
     for col in ["Temp", "DewPoint"]:
         if col in df.columns:
@@ -252,6 +268,7 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
             # only between observed levels: nothing is made up above the last or below the first
             df[col] = df[col].interpolate(method="index", limit_area="inside")
             df.loc[mask, col] = df.loc[mask, col].round(1)
+            df.loc[mask & in_missing_layer("Temperature"), col] = np.nan
 
     # Physical constraint: Dewpoint cannot exceed dry temperature
     if "Temp" in df.columns and "DewPoint" in df.columns:
@@ -291,8 +308,9 @@ def interpolate_data(df: pd.DataFrame) -> pd.DataFrame:
 
         # Fill missing values in original columns; a variable wind (speed without direction) keeps
         # its NaN direction
-        missing_speed = df["WindSpeed"].isna() & df["u"].notna()
-        missing_dir = df["WindDir"].isna() & df["WindSpeed"].isna() & df["u"].notna()
+        fillable = df["u"].notna() & ~in_missing_layer("Wind")
+        missing_speed = df["WindSpeed"].isna() & fillable
+        missing_dir = df["WindDir"].isna() & df["WindSpeed"].isna() & fillable
 
         df.loc[missing_speed, "WindSpeed"] = reconstructed_speed[missing_speed].round(1)
         df.loc[missing_dir, "WindDir"] = pd.Series(reconstructed_dir, index=df.index)[missing_dir].round(0)
@@ -308,7 +326,13 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
     Calculates missing Geopotential Height values using the Hypsometric Equation.
     Formula: Z2 = Z1 + (R * Tv_avg / g) * ln(P1 / P2)
     Uses virtual temperature Tv where humidity is available to ensure physical accuracy.
-    Includes WMO Extrapolation Rule 35.2.2.4 upward to the next standard level.
+    Includes WMO Extrapolation Rule 35.2.2.4 upward to the next standard level: a level the
+    report does not hold gets a row with its geopotential only (the extrapolated temperature
+    serves that calculation and is not given), and a level the report holds is left as reported.
+    A level without a temperature takes one for this calculation only: interpolated in ln(P)
+    between observed temperatures, and the top temperature above the last one, there within the
+    limits of the same rule (25 hPa and a quarter of the level's pressure); a level further up
+    keeps no height unless the report gives it.
     """
     if df.empty or "Pressure" not in df.columns or "Temp" not in df.columns:
         return df
@@ -324,12 +348,17 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
     dewpoints = pd.to_numeric(df.get("DewPoint", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=float)
     heights = pd.to_numeric(df.get("Height", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=float)
 
-    # Linear interpolation for temperature to ensure continuous profile for hypsometric calculation
-    valid_t = ~np.isnan(temps)
+    # Temperature in ln(P) between observed levels, for a continuous profile in the hypsometric
+    # calculation (the top and bottom temperatures are held beyond the observed ones)
+    valid_t = ~np.isnan(temps) & (pressures > 0)
     if not valid_t.any():
         return df
+    # Lowest pressure with an observed temperature: heights above it are bounded (35.2.2.4)
+    p_top_t = float(pressures[valid_t].min())
     if not valid_t.all():
-        temps = np.interp(np.arange(len(temps)), np.where(valid_t)[0], temps[valid_t])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            height_coord = -np.log(pressures)
+        temps = np.interp(height_coord, height_coord[valid_t], temps[valid_t])
 
     # Virtual temperature: Tv = T_K * (1 + 0.608 * w)
     temp_k = temps + 273.15
@@ -348,6 +377,9 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
     for i in range(1, n):
         if np.isnan(heights[i]) and not np.isnan(heights[i - 1]):
             p1, p2 = pressures[i - 1], pressures[i]
+            beyond = p_top_t - p2
+            if beyond > 25.0 or beyond > 0.25 * p2:
+                continue
             if p1 > 0 and p2 > 0 and p1 > p2:
                 avg_tv = (tv_k[i - 1] + tv_k[i]) / 2.0
                 dz = (R * avg_tv / g) * np.log(p1 / p2)
@@ -379,7 +411,8 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
             1000, 925, 850, 700, 500, 400, 300, 250, 200, 150,
             100, 70, 50, 30, 20, 10, 7, 5, 3, 2, 1,
         ]
-        targets = [sl for sl in standard_levels if sl < p_min]
+        reported = set(pd.to_numeric(df["Pressure"], errors="coerce").round(1))
+        targets = [sl for sl in standard_levels if sl < p_min and float(sl) not in reported]
 
         new_rows = []
         for p_target in targets:
@@ -387,8 +420,8 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
             if delta_p <= 25 and delta_p <= 0.25 * p_target:
                 try:
                     p_base = p_min + delta_p
-                    all_p = df["Pressure"].to_numpy(dtype=float)
-                    all_t = (df["Temp"].to_numpy(dtype=float) + 273.15)
+                    all_p = valid_rows["Pressure"].to_numpy(dtype=float)
+                    all_t = valid_rows["Temp"].to_numpy(dtype=float) + 273.15
                     log_p = np.log(all_p)
                     log_p_base = np.log(p_base)
 
@@ -410,8 +443,6 @@ def calculate_geopotential(df: pd.DataFrame) -> pd.DataFrame:
                         {
                             "Pressure": int(p_target),
                             "Height": round(z_target),
-                            "Temp": round(t_target - 273.15, 1),
-                            "DewPoint": None,
                             "Source": "Extrapolated",
                         }
                     )
@@ -502,11 +533,12 @@ PART_NAMES = ("TTAA", "TTBB", "TTCC", "TTDD")
 
 KT_PER_MS = 3600.0 / 1852.0
 
-# Groups that cannot be a TTTDD group: "not observed" markers, and section markers whose digits
-# give an impossible temperature or an unused depression code. The other markers are valid TTTDD
-# groups (21212 = 21.2 C, 31313 = -31.3 C, 51515 = -51.5 C, ...), read as data where the position
-# in the message says so; temperatures of -66 and -77 C likewise start like the 66/77 indicators.
-_NOT_TEMP = frozenset(["88999", "77999", "66999", "41414", "52525", "54545", "55555", "56565", "58585"])
+# Groups that cannot be a TTTDD group: "not observed" markers, 41414 (41.4 C with a dew point of
+# 40 C) and 55555 (depression code 55 is not used). The other markers are valid TTTDD groups
+# (21212 = 21.2 C, 31313 = -31.3 C, 52525 = -52.5 C, 56565 = -56.5 C with a depression of 15 C,
+# ...), read as data where the position in the message says so; temperatures of -66 and -77 C
+# likewise start like the 66/77 indicators.
+_NOT_TEMP = frozenset(["88999", "77999", "66999", "41414", "55555"])
 
 # Regional (51515-59595) and national (61616-69696) sections come last in a part: no level data
 # follows them. 55555 and 66666 are not in the list: in parts B and D 55555 is a significant level
@@ -556,16 +588,17 @@ def wind_top_pressure(id_char: str, part_c: bool) -> Optional[float]:
     Id (code table 1734): pressure of the last standard level that carries a wind group, in
     hundreds of hPa in Part A (0 = 1000, 9 = 925, 8 = 850) and tens of hPa in Part C. Levels
     above it have no wind group (Id 2 covers 250 and 200 hPa, Id 1 covers 150 and 100 hPa).
-    "/" (no wind at any standard level) gives infinity; anything else gives None (unknown).
+    "/" (no wind at any standard level) gives infinity; a figure the table does not define for
+    the part (6 in Part A; 0, 4, 6, 8, 9 in Part C) or anything else gives None (unknown).
     """
     if id_char == "/":
         return math.inf
-    if len(id_char) != 1 or id_char not in "0123456789":
-        return None
-    d = int(id_char)
     if part_c:
-        return 100.0 if d == 0 else d * 10.0
-    return {0: 1000.0, 9: 925.0, 8: 850.0}.get(d, d * 100.0)
+        return {"7": 70.0, "5": 50.0, "3": 30.0, "2": 20.0, "1": 10.0}.get(id_char)
+    return {
+        "0": 1000.0, "9": 925.0, "8": 850.0, "7": 700.0, "5": 500.0,
+        "4": 400.0, "3": 300.0, "2": 200.0, "1": 100.0,
+    }.get(id_char)
 
 
 def split_bulletin(text: Optional[str]) -> Dict[str, str]:
@@ -695,9 +728,9 @@ def parse_ttaa_ttcc(
                 continue
             pressure = special_pressure(g[2:])
             i += 1
-            if pressure is None:
-                continue
-            special_data.append(
+            # Without a readable pressure the level is not kept, but its groups are still its own
+            found: List[Dict[str, Any]] = []
+            found.append(
                 {"Symbol": "PtPtPt", "Subject": "Tropopause", "Description": "Pressure", "Value": f"{pressure}hPa"}
             )
             t_grp = group(i)
@@ -705,12 +738,12 @@ def parse_ttaa_ttcc(
                 t = decode_temperature(t_grp[:3], tables=cloud_tables)
                 d = decode_dewpoint_depression(t_grp[3:], tables=cloud_tables)
                 if t is not None:
-                    special_data.append(
+                    found.append(
                         {"Symbol": "TtTtTt", "Subject": "Tropopause", "Description": "Temperature", "Value": f"{t}C"}
                     )
                 if t is not None and d is not None:
                     dw = calculate_dewpoint(t, d)
-                    special_data.append(
+                    found.append(
                         {"Symbol": "DtDt", "Subject": "Tropopause", "Description": "Dewpoint", "Value": f"{dw}C"}
                     )
                 i += 1
@@ -718,7 +751,7 @@ def parse_ttaa_ttcc(
                 if _is_wind_group(w_grp):
                     wd, ws = decode_wind(w_grp)
                     if ws is not None:
-                        special_data.append(
+                        found.append(
                             {
                                 "Symbol": "dtdtftft",
                                 "Subject": "Tropopause",
@@ -727,6 +760,8 @@ def parse_ttaa_ttcc(
                             }
                         )
                     i += 1
+            if pressure is not None:
+                special_data.extend(found)
             continue
 
         # Maximum Wind Level (77PmPmPm or 66PmPmPm, dmdmfmfmfm, optional 4vbvbvava)
@@ -736,16 +771,14 @@ def parse_ttaa_ttcc(
                 continue
             pressure = special_pressure(g[2:])
             i += 1
-            if pressure is None:
-                continue
-            special_data.append(
+            found = [
                 {"Symbol": "PmPmPm", "Subject": "Max Wind", "Description": "Pressure", "Value": f"{pressure}hPa"}
-            )
+            ]
             wind_grp = group(i)
             if _is_wind_group(wind_grp):
                 wd, ws = decode_wind(wind_grp)
                 if ws is not None:
-                    special_data.append(
+                    found.append(
                         {
                             "Symbol": "dmdmfmfmfm",
                             "Subject": "Max Wind",
@@ -758,13 +791,15 @@ def parse_ttaa_ttcc(
                 shear_grp = group(i)
                 if shear_grp is not None and len(shear_grp) == 5 and shear_grp.startswith("4"):
                     vb, va = shear_grp[1:3], shear_grp[3:5]
-                    special_data.append(
+                    found.append(
                         {"Symbol": "vbvb", "Subject": "Max Wind", "Description": "Shear Below", "Value": f"{vb}{unit}"}
                     )
-                    special_data.append(
+                    found.append(
                         {"Symbol": "vava", "Subject": "Max Wind", "Description": "Shear Above", "Value": f"{va}{unit}"}
                     )
                     i += 1
+            if pressure is not None:
+                special_data.extend(found)
             continue
 
         # Regional / Instrumentation group 31313
@@ -856,6 +891,8 @@ def parse_ttbb_ttdd(
     mode = "TEMP"
     is_ttdd = "TTDD" in message
     last_p: Optional[float] = None
+    # A layer of missing data (nn/// /////) is open until the level that closes it
+    layer_open = False
     unit = "kt"
 
     i = 0
@@ -867,6 +904,7 @@ def parse_ttbb_ttdd(
             is_ttdd = (g == "TTDD")
             mode = "TEMP"
             last_p = None
+            layer_open = False
             i += 1
             if i < len(groups) and re.match(r"^[0-9]{4}[0-9/]$", groups[i]):
                 unit = speed_unit(groups[i])
@@ -879,6 +917,7 @@ def parse_ttbb_ttdd(
         if g == "21212":
             mode = "WIND"
             last_p = None
+            layer_open = False
             i += 1
             continue
 
@@ -916,6 +955,12 @@ def parse_ttbb_ttdd(
                 i += 1
                 continue
 
+            # Layer of missing data (35.3.1.6, 35.3.2.2): nn/// /////, between its boundary levels
+            if g[2:] == "///":
+                layer_open = True
+                i += 2 if i + 1 < len(groups) and groups[i + 1] == "/////" else 1
+                continue
+
             try:
                 ppp_part = int(g[2:])
                 if nn == "00":
@@ -930,11 +975,24 @@ def parse_ttbb_ttdd(
                 if is_ttdd:
                     pressure = pressure / 10.0
 
+                if layer_open and last_p is not None and last_p > pressure:
+                    special_data.append(
+                        {
+                            "Symbol": "nn///",
+                            "Subject": "Missing Data",
+                            "Description": "Temperature" if mode == "TEMP" else "Wind",
+                            "Value": f"{last_p:g}-{pressure:g}hPa",
+                            "Bottom": last_p,
+                            "Top": pressure,
+                        }
+                    )
+                layer_open = False
                 last_p = pressure
 
                 if mode == "TEMP":
+                    # The group after nnPPP is the temperature group, 21212 (21.2 C) included
                     t_group = groups[i + 1] if i + 1 < len(groups) else None
-                    if t_group and len(t_group) == 5 and t_group != "21212":
+                    if t_group and len(t_group) == 5:
                         t = decode_temperature(t_group[:3], tables=cloud_tables)
                         d = decode_dewpoint_depression(t_group[3:], tables=cloud_tables)
                         levels_data.append(
@@ -1015,6 +1073,7 @@ def decode_full(
 
     data_frames: List[pd.DataFrame] = []
     special_frames: List[pd.DataFrame] = []
+    missing_layers: List[Tuple[str, float, float]] = []
 
     for name, parser in [
         ("TTAA", parse_ttaa_ttcc),
@@ -1027,13 +1086,16 @@ def decode_full(
             lvls, spcls = parser(msg, cloud_tables=cloud_tables)
             if lvls:
                 data_frames.append(pd.DataFrame(lvls))
+            missing_layers += [
+                (s["Description"], s["Bottom"], s["Top"]) for s in spcls if s["Subject"] == "Missing Data"
+            ]
             if spcls:
                 special_frames.append(pd.DataFrame(spcls).assign(Part=name))
 
     df_main = merge_data(data_frames)
     if not df_main.empty and df_main["Temp"].notna().sum() < 2:
         raise ValueError("TEMP message without temperatures above the surface")
-    df_main = interpolate_data(df_main)
+    df_main = interpolate_data(df_main, missing_layers)
     df_main = calculate_geopotential(df_main)
 
     df_special = pd.concat(special_frames, ignore_index=True) if special_frames else pd.DataFrame()
@@ -1078,7 +1140,8 @@ def decode(
     Returns:
         tuple[pd.DataFrame, pd.DataFrame]:
             - df_main: Vertical profile with Pressure, Height, Temp, DewPoint, WindDir, WindSpeed.
-            - df_special: Tropopause, Maximum Wind, Cloud layers, and Radiosonde/Solar metadata,
+            - df_special: Tropopause, Maximum Wind, Cloud layers, layers of missing data, and
+              Radiosonde/Solar metadata,
               with the part (TTAA, TTBB, TTCC, TTDD) each entry came from in the Part column.
     """
     # Defensive type validation
