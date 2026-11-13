@@ -295,3 +295,139 @@ def test_bulletin_in_every_argument():
         df_main, df_special = decode(*args)
         pd.testing.assert_frame_equal(df_main, split_main)
         pd.testing.assert_frame_equal(df_special, split_special)
+
+
+def test_marker_like_temperatures_keep_the_rest_of_part_a():
+    """52525 (-52.5 C) at 200 hPa and 56565 (-56.5 C) at the tropopause are data, not sections."""
+    ttaa = TTAA_CG.replace("20237 55934", "20237 52525").replace("88999", "88120 56565 24050")
+    df_main, df_special = decode(ttaa, None, None, None)
+    top = df_main.set_index("Pressure")
+    assert (top.loc[200.0, "Temp"], top.loc[200.0, "DewPoint"]) == (-52.5, -55.0)
+    assert top.loc[100.0, "Temp"] == -77.1
+    rows = specials(df_special)
+    assert ("TTAA", "TtTtTt", "-56.5C") in rows
+    assert ("TTAA", "DtDt", "-71.5C") in rows
+    assert ("TTAA", "PmPmPm", "146hPa") in rows
+    assert ("TTAA", "8GGgg", "11:37") in rows
+
+
+def test_21212_as_part_b_temperature():
+    """21212 after a level group is 21.2 C with a depression of 1.2 C, not the wind section."""
+    ttbb = "TTBB 80128 83612 00951 21212 11931 16420 22911 19041 21212 00951 09017 11940 08543="
+    levels, _ = parse_ttbb_ttdd(ttbb)
+    assert [(lv["Pressure"], lv["Source"]) for lv in levels] == [
+        (951.0, "SigTemp"), (931.0, "SigTemp"), (911.0, "SigTemp"), (951.0, "SigWind"), (940.0, "SigWind"),
+    ]
+    assert (levels[0]["Temp"], levels[0]["DewPoint"]) == (21.2, 20.0)
+    assert levels[4]["WindSpeed"] == 43.0
+
+
+def test_reported_standard_level_is_not_extrapolated_again():
+    """20 hPa reported with its height and ///// stays one row, with no made-up temperature."""
+    ttcc = "TTCC 80123 83612 70873 72159 27518 50079 64561 05504 30399 57761 06507 20648 ///// 88999 77999="
+    ttdd = "TTDD 8012/ 83612 11400 60170 22202 52782="
+    df_main, _ = decode(TTAA_CG, None, ttcc, ttdd)
+    rows = df_main[df_main["Pressure"] == 20.0]
+    assert len(rows) == 1
+    assert rows.iloc[0]["Height"] == 26480 and rows.iloc[0]["Source"] == "Standard"
+    assert np.isnan(rows.iloc[0]["Temp"])
+
+
+def test_extrapolated_level_has_a_height_only():
+    """Sounding ending at 20.2 hPa without a 20 hPa group: the geopotential alone is extrapolated."""
+    ttcc = "TTCC 80123 83612 70873 72159 27518 50079 64561 05504 30399 57761 06507 88999 77999="
+    ttdd = "TTDD 8012/ 83612 11400 60170 22202 52782="
+    df_main, _ = decode(TTAA_CG, None, ttcc, ttdd)
+    rows = df_main[df_main["Pressure"] == 20.0]
+    assert len(rows) == 1 and rows.iloc[0]["Source"] == "Extrapolated"
+    assert 26000 < rows.iloc[0]["Height"] < 27000
+    assert rows[["Temp", "DewPoint"]].isna().all().all()
+    assert not df_main["Pressure"].duplicated().any()
+
+
+def test_missing_layers_are_not_interpolated():
+    """nn/// ///// (35.3.1.6, 35.3.2.2): no value is filled inside the layer, which is listed."""
+    ttbb = (
+        "TTBB 80128 83612 00951 16805 11900 14420 22/// ///// 33700 02041 44500 10560 "
+        "21212 00951 09017 11940 08543 22850 10020 33/// ///// 44600 27030 55500 27040="
+    )
+    df_main, df_special = decode(None, ttbb, None, None)
+    rows = df_main.set_index("Pressure")
+    assert np.isnan(rows.loc[850.0, "Temp"]) and np.isnan(rows.loc[850.0, "DewPoint"])
+    assert not np.isnan(rows.loc[940.0, "Temp"]) and not np.isnan(rows.loc[600.0, "Temp"])
+    assert np.isnan(rows.loc[700.0, "WindSpeed"]) and np.isnan(rows.loc[700.0, "WindDir"])
+    assert not np.isnan(rows.loc[900.0, "WindSpeed"])
+    assert specials(df_special) == [
+        ("TTBB", "nn///", "900-700hPa"), ("TTBB", "nn///", "850-600hPa"),
+    ]
+    assert list(df_special["Description"]) == ["Temperature", "Wind"]
+
+
+def test_undefined_id_does_not_drop_winds():
+    """Id = 0 is not defined in Part C: the wind groups are still read as winds, not as levels."""
+    ttcc = "TTCC 80120 83612 70873 72159 27518 50079 64561 30014 30399 57761 06507="
+    df_main, _ = decode(None, None, ttcc, None)
+    assert list(df_main["Pressure"]) == [70.0, 50.0, 30.0]
+    assert df_main.set_index("Pressure").loc[50.0, "WindDir"] == 300.0
+
+
+def test_special_level_without_pressure_keeps_its_groups():
+    """88/// : the tropopause is dropped whole; its temperature group is not read as a level."""
+    ttaa = TTAA_CG.replace("88999", "88/// 50580 24050")
+    df_main, df_special = decode(ttaa, None, None, None)
+    assert (df_main["Pressure"] == 500.0).sum() == 1
+    assert df_main.set_index("Pressure").loc[500.0, "Height"] == 5870
+    assert "Tropopause" not in set(df_special["Subject"])
+    assert ("TTAA", "PmPmPm", "146hPa") in specials(df_special)
+
+
+def test_direction_00_with_speed_has_no_direction():
+    direction, speed = decode_wind("00010")
+    assert np.isnan(direction) and speed == 10.0
+    assert decode_wind("00000") == (0.0, 0.0)
+    assert decode_wind("00510") == (5.0, 10.0)
+
+
+def test_sounding_system_tables_follow_wmo():
+    """31313 42308: table 3849, common code tables C-2 and C-7."""
+    _, special = parse_ttaa_ttcc("TTAA 80121 83612 99951 16805 09017 31313 42308 81137=")
+    assert [s["Value"] for s in special[:3]] == [
+        "Solar and infrared corrected automatically by radiosonde system",
+        "Vaisala RS41/DigiCORA MW41 (Finland)",
+        "Automatic satellite navigation",
+    ]
+
+
+def test_csv_tables_match_the_built_in_ones():
+    import os
+
+    import fm35_decoder
+    from fm35_decoder.tables import WMO_TABLES
+
+    load_wmo_tables.cache_clear()
+    csv_tables = load_wmo_tables(os.path.join(os.path.dirname(fm35_decoder.__file__), "table_codes"))
+    load_wmo_tables.cache_clear()
+    for key in ("Nh", "CL", "h", "CM", "CH", "Sr", "rara", "sasa"):
+        assert csv_tables[key] == WMO_TABLES[key], key
+
+
+def test_heights_above_the_last_temperature_are_bounded():
+    """Wind levels above the last temperature get a height only within 25 hPa and a quarter of
+    their pressure (35.2.2.4); a standard level further up keeps the height it reports."""
+    ttcc = "TTCC 80123 83612 70873 72159 27518 50079 ///// 05504="
+    ttdd = "TTDD 8012/ 83612 11650 70160 21212 11600 27010 22400 27020="
+    df_main, _ = decode(TTAA_CG, None, ttcc, ttdd)
+    rows = df_main.set_index("Pressure")
+    assert 19100 < rows.loc[65.0, "Height"] < 19250
+    assert 19550 < rows.loc[60.0, "Height"] < 19750  # 5 hPa above the last temperature
+    assert rows.loc[50.0, "Height"] == 20790  # reported
+    assert pd.isna(rows.loc[40.0, "Height"])  # 25 hPa above, more than a quarter of 40 hPa
+
+
+def test_height_inside_a_layer_uses_log_pressure_temperature():
+    """A wind level between two temperatures takes its height from a ln(P) temperature."""
+    ttbb = "TTBB 80128 83612 00951 16805 11500 05704 21212 00951 09017 11700 29028 22600 28020="
+    df_main, _ = decode(TTAA_CG, ttbb, None, None)
+    rows = df_main.set_index("Pressure")
+    assert rows.loc[700.0, "Height"] == 3157 and rows.loc[500.0, "Height"] == 5870
+    assert 4350 < rows.loc[600.0, "Height"] < 4450

@@ -10,8 +10,7 @@ The decoding methodology implemented in this library adheres strictly to:
 
 - **WMO-No. 306, Volume I.1, Part A (Alphanumeric Codes)**:
   - **Code Form FM 35-XII TEMP**: *Upper-air report from land station*.
-  - **Code Form FM 36-XII TEMP SHIP**: *Upper-air report from sea station*.
-  - **Code Form FM 38-XII TEMP MOBIL**: *Upper-air report from mobile land station*.
+  - FM 36 TEMP SHIP and FM 38 TEMP MOBIL share the code form but identify the station with position groups (`99LaLaLa QcLoLoLoLo ...`), which this decoder does not read.
 - **WMO Code Tables**:
   - **Code Table 3931** ($T_a$): *Approximate tenths of degrees Celsius and its sign*.
   - **Code Table 0777** ($D_a D_a$ / $2D_a$): *Dew-point depression ($\Delta T = T - T_d$)*.
@@ -140,8 +139,8 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 ### 4.11 Radiosonde Metadata & Release Time: `31313 sr rara sasa 8GGgg`
 - `31313`: Section identifier for instrumentation metadata.
 - `sr`: Solar and infrared radiation correction applied (Code Table 3849: `0`–`7`, or `/`; a group starting with `8` right after `31313` is the launch time, the sonde group being absent).
-- `rara`: Radiosonde model type (Common Code Table C-2 / Code Table 3685; e.g., Vaisala RS41, Graw DFM-17).
-- `sasa`: Wind-tracking technique (Code Table 3872; e.g., GPS, Radar, Radiotheodolite).
+- `rara`: Radiosonde model type (Common Code Table C-2 / Code Table 3685; e.g., `23` Vaisala RS41/DigiCORA MW41, `54` Graw DFM-17). C-2 assigned the figures 01–99 twice; a reassigned figure is decoded as the newer system.
+- `sasa`: Tracking technique / status of system used (Code Table 3872 / Common Code Table C-7; e.g., `08` automatic satellite navigation).
 - `8GGgg`: Actual radiosonde launch time in hours (`GG`) and minutes (`gg`) UTC.
 
 ---
@@ -152,6 +151,7 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 Atmospheric pressure decreases exponentially with height in accordance with the barometric equation ($P(z) = P_0 e^{-z / H}$). On thermodynamic charts such as the **Skew-T / Log-P** diagram:
 - Temperature and dewpoint vary approximately linearly with the **natural logarithm of pressure** ($\ln P$).
 - Missing intermediate levels in `df_main` are interpolated with respect to $\ln P$, preventing artificial distortions caused by linear interpolation in Cartesian pressure space. Only gaps between two observed levels are filled; values are never extrapolated above the last observation.
+- A layer reported as missing in Part B or D (`nn/// /////` between its two boundary levels, Regulations 35.3.1.6 and 35.3.2.2) is not filled: levels inside it keep no temperature (or wind), and the layer is listed in `df_special` under the subject `Missing Data`.
 
 ### 5.2 Vector Wind Interpolation
 Interpolating wind direction and speed directly as scalar numbers creates severe mathematical artifacts (e.g., averaging $350^\circ$ and $10^\circ$ scalar numbers produces $180^\circ$ South wind instead of $360^\circ$ North wind).
@@ -173,4 +173,6 @@ Where:
 - $g_0 = 9.80665\text{ m/s}^2$ (Standard acceleration of gravity).
 - $\bar{T}_v$ is the mean **virtual temperature** of the layer, calculated from dry temperature and water vapor mixing ratio ($w$):
   $$T_v = T \cdot (1 + 0.608 \cdot w)$$
+
+A level without a temperature takes one for this calculation only: interpolated in $\ln P$ between observed temperatures, and the top temperature above the last one. Above the last temperature a height is computed only within the limits of Regulation 35.2.2.4 (25 hPa, and a quarter of the level's pressure); further up a level keeps no height unless the report gives it. Under the same rule, a standard level just above the top of the sounding that the report does not hold is added with its geopotential only (`Source` = `Extrapolated`).
   Accounting for moisture via virtual temperature corrects for air density, preventing 20–50 meter thickness errors in warm, humid lower atmospheres.

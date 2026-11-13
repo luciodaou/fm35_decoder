@@ -97,6 +97,8 @@ Missing geopotential heights are computed using the Hypsometric Equation:
 $$Z_2 - Z_1 = \frac{R_d \cdot \bar{T}_v}{g_0} \ln\left(\frac{P_1}{P_2}\right)$$
 The decoder incorporates **virtual temperature ($T_v$)** when moisture data is available, accounting for air density variations in warm and humid tropical boundary layers.
 
+A level without a temperature takes one for this calculation only: interpolated in $\ln P$ between observed temperatures, and the top temperature above the last one. Above the last temperature a height is computed only within the limits of Regulation 35.2.2.4 (25 hPa, and a quarter of the level's pressure); further up a level keeps no height unless the report gives it. Under the same rule, a standard level just above the top of the sounding that the report does not hold is added with its geopotential only (`Source` = `Extrapolated`).
+
 ---
 
 ## Performance & Architecture
@@ -131,9 +133,9 @@ The decoder incorporates **virtual temperature ($T_v$)** when moisture data is a
         CL       Cloud       Low Type  Stratus nebulosus and/or Stratus fractus  TTBB
         CM       Cloud       Mid Type                             No CM clouds  TTBB
         CH       Cloud      High Type                             No CH clouds  TTBB
-        sr  Solar/Inst     Solar Corr                     NOAA solar corrected  TTAA
+        sr  Solar/Inst     Solar Corr  Solar and infrared corrected automatically by radiosonde system  TTAA
       rara  Solar/Inst     Sonde Type     Vaisala RS41/DigiCORA MW41 (Finland)  TTAA
-      sasa  Solar/Inst       Tracking                               Radar (5 cm)  TTAA
+      sasa  Solar/Inst       Tracking            Automatic satellite navigation  TTAA
      8GGgg  Solar/Inst           Time                                    11:31  TTAA
     PtPtPt  Tropopause       Pressure                                  90.6hPa  TTCC
     TtTtTt  Tropopause    Temperature                                   -77.1C  TTCC
