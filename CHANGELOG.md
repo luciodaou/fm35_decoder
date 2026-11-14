@@ -1,5 +1,79 @@
 # Changelog
 
+## 2.0 - 2026-11-14
+
+The decoder is rebuilt on the upper-air decoder of Unidata GEMPAK (`dcuair` and the `RU` bridge
+library, `gempak/source/bridge/ru`). The level data is decoded by the rules of its Fortran
+routines; the result is a typed data model, with the two DataFrames of version 1 still available
+from `decode`. Reported temperatures, dew points, heights and winds of the test soundings
+(station 83746, 11–13 November 2026, and station 83779 against the University of Wyoming listing)
+decode as in 1.2.
+
+### Added
+
+- **Bulletins and report headers.** WMO abbreviated headings (with `BBB`), `SOH`/`ETX` framing,
+  any number of reports and stations per bulletin, `NIL` reports. Each report gives its part,
+  station, day, hour, wind unit and `Id`.
+- **Observation time**, from the day and hour of the report and a reference time for the year and
+  the month, and its rounding to 3 hours, on which the parts of a sounding are matched.
+- **Data model**: `SoundingReport`, `SoundingLevel`, `MergedSounding`, `WmoHeader`, `MissingLayer`,
+  `SoundingSystem`, `StationMetadata`, and the enums `ReportPart`, `LevelType`, `WindUnit`,
+  `Platform`. Wind speeds are in m/s in the model.
+- **Pipeline**: `iter_bulletins`, `iter_reports`, `parse_report`, `iter_decoded_reports`,
+  `merge_reports`, `merge_parts`, `decode_soundings`, `to_dataframes`.
+- **PILOT** (FM 32, `PPAA`–`PPDD`): winds on standard levels, on heights and on pressure levels.
+- **TEMP SHIP** (`UUAA`–`UUDD`) and **TEMP DROP** (`XXAA`, `XXBB`): call sign, position, and the
+  dropsonde identifier from section `61616`.
+- **Station tables**: `load_station_table` reads the GEMPAK format (`snstns.tbl`); with one, the
+  surface of a merged sounding takes the station elevation.
+- **Corrections**: of two reports of the same part, the first is kept unless the later one comes
+  from a bulletin whose `BBB` starts with `C`, `R` or `A`.
+- `decode(..., wind_unit="m/s")` and `decode(..., interpolate=False)`.
+- `df_main` has a `Derived` column naming the values of each row that were computed or
+  interpolated, and `Source` distinguishes `Surface`, `Tropopause` and `MaxWind` levels.
+- Tropopause and maximum wind levels join the profile at their pressure.
+
+### Changed (decoding now follows GEMPAK)
+
+- **Standard levels are read in the order of the code form.** A group out of place is not a
+  level. After a bad group the decoder looks for the next level that is followed by the level
+  after it, so a level that comes after a gap at the very end of a cut report is not found.
+  Nothing is decoded in a Part A whose first group is a tropopause, maximum wind or `51515` group.
+- **Significant levels follow the sequence of `nn`**, and their pressure must decrease. A level
+  whose temperature (or wind) is missing is not kept.
+- **Heights** are restored by a fixed rule per level instead of the closest standard-atmosphere
+  value: `85950` is 950 m (was 1950 m), `00500` is 500 m (was 0 m), `70500` is 2500 m (was
+  3500 m). A standard level without a height is dropped.
+- **Wind direction**: north (`36`) is 0° (was 360°). Variable wind (`99`) and any direction above
+  360° give no wind (the speed was kept). `00` with a speed is 0° with that speed.
+- **Dew-point depression** `51`–`55` is read as 1–5 °C (was missing).
+- **Part B pressures** under 100 are always 1000 hPa and more.
+- **`Id` in Part C**: `1` and `0` give every level a wind group.
+- **Tropopause**: a wind of 0° and speed 0 is taken as missing; `88999` ends the search. A
+  **maximum wind** without a wind is dropped.
+- A ten-character field is read as two groups; a field longer than 15 characters ends the report.
+- **Interpolation**: a dew point is filled only where the temperature is filled too.
+- An empty result has the usual columns (it had none).
+
+Two rules of 1.2 are kept where GEMPAK differs: `21212` and `51515` are markers only where a
+level group is expected (`21212` after `nnPPP` is 21.2 °C; `51515` after `PPhhh` is −51.5 °C).
+The `31313` and `41414` sections, the shear group and the layers of missing data, which GEMPAK
+does not decode, are kept as well; a layer marker (`nn///`) takes its place in the sequence of
+`nn`.
+
+### Removed
+
+- **Extrapolated standard levels** (`Source` = `Extrapolated`): no level is added that the report
+  does not hold.
+- `route_parts` and `split_bulletin` (use `iter_reports`), and the functions of
+  `fm35_decoder.decoder` that decoded single groups or parts (`decode_temperature`,
+  `decode_wind`, `decode_height`, `parse_ttaa_ttcc`, `parse_ttbb_ttdd`, `interpolate_data`,
+  `calculate_geopotential`, …): see `fm35_decoder.groups`, `parts` and `merge`.
+- `ValueError` for a message with fewer than two temperatures: a surface-only report decodes.
+- A message without its part name and header is no longer decoded.
+- The CSV versions of Code tables 3931 and 0777 are no longer read (the rules are in the code).
+- NumPy is no longer a direct dependency (pandas still is, for the DataFrames).
+
 ## 1.2 - 2026-11-13
 
 A review of the decoder against the WMO Manual on Codes (WMO-No. 306, Volume I.1, FM 35 and its

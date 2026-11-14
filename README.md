@@ -5,15 +5,16 @@
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/fm35_decoder.svg)](https://pypi.org/project/fm35_decoder)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A fast, robust Python tool to decode standard **WMO FM 35 TEMP** upper-air weather messages from radiosonde observations.
+A Python decoder for **WMO FM 35 TEMP** and **FM 32 PILOT** upper-air reports (and their ship and
+dropsonde forms, FM 36 and FM 37), based on the upper-air decoder of
+[Unidata GEMPAK](https://github.com/Unidata/gempak) (`dcuair`, the `RU` bridge library).
 
-For an extensive plain-English guide referencing official WMO manuals, see [TEMP_DECODING.md](TEMP_DECODING.md).
+For a plain-English guide to the code form, see [TEMP_DECODING.md](TEMP_DECODING.md).
+Version 2.0 changes the decoding rules and part of the API: see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
 ## Installation
-
-Install the package directly from PyPI:
 
 ```bash
 pip install fm35_decoder
@@ -23,129 +24,124 @@ pip install fm35_decoder
 
 ## Quickstart
 
-Import the decoder and call `decode()` with the message parts (`TTAA`, `TTBB`, `TTCC`, `TTDD`):
+### The parts of one sounding, as DataFrames
 
 ```python
 from fm35_decoder import decode
 
-# Your FM35/TEMP message parts
 ttaa = "TTAA 73121 83779 99938 21224 01008 00163 ///// ///// 92843 20019 07506 85570 18650 36008 ..."
 ttbb = "TTBB 73128 83779 00938 21224 11882 16804 22870 19856 33735 11056 44712 08616 55615 01218 ..."
 ttcc = "TTCC 73123 83779 70865 71568 15020 50064 67574 12519 30380 58383 08535 88906 77162 26018 ..."
 ttdd = "TTDD 7312/ 83779 11906 77162 22585 70370 33542 70970 44445 63978 55283 57785 21212 11935 ..."
 
 df_main, df_special = decode(ttaa, ttbb, ttcc, ttdd)
-
-# df_main: Clean vertical sounding profile (Pressure, Height, Temp, DewPoint, WindDir, WindSpeed)
-# df_special: Metadata, Tropopause, Maximum Wind, and Cloud groups, with the part each came from
-print(df_main)
-print(df_special)
 ```
 
-Any argument may also hold a whole bulletin with several parts: `decode(bulletin)` splits it and
-decodes each part once (`split_bulletin` and `route_parts` do the splitting on their own).
+- `df_main` is the profile, surface first: `Pressure` (hPa), `Height` (m), `Temp`, `DewPoint` (°C),
+  `WindDir` (degrees), `WindSpeed` (knots), `Source` (`Surface`, `Standard`, `SigTemp`, `SigWind`,
+  `Tropopause`, `MaxWind`) and `Derived`, which names the columns of the row that were computed
+  rather than reported (`Height,Temp,DewPoint`).
+- `df_special` lists the tropopause, maximum wind, layers of missing data, sounding system and
+  cloud entries as text, with the part each came from.
+
+Options: `decode(..., wind_unit="m/s")` for speeds in m/s, and `decode(..., interpolate=False)` to
+leave temperature, dew point and wind empty where the report gives none. Any argument may hold a
+whole bulletin; every report found in it is used.
+
+### A stream of bulletins, as typed objects
+
+```python
+from datetime import datetime, timezone
+from fm35_decoder import decode_soundings, load_station_table
+
+stations = load_station_table("gempak/tables/stns/snstns.tbl")      # optional
+with open("uair.gts", encoding="latin-1") as stream:
+    soundings = decode_soundings(stream, reference_time=datetime(2026, 11, 13, tzinfo=timezone.utc),
+                                 station_table=stations)
+
+for sounding in soundings:
+    print(sounding.station_id, sounding.timestamp_utc, [part.value for part in sounding.parts])
+    for level in sounding.profile:
+        print(level.pressure_hpa, level.height_m, level.temp_c, level.wind_speed_ms, level.derived)
+```
+
+The steps are available one by one, as generators where the input allows it:
+
+| Function | GEMPAK routines | Result |
+| :--- | :--- | :--- |
+| `iter_bulletins(source)` | `DC_GBUL`, `DC_GHDR` | `Bulletin` (WMO heading and text) |
+| `iter_reports(text)` | `RU_GRPT` | the text of each report |
+| `parse_report(text, header, reference_time)` | `RU_SHDR`, `RU_DECD` and the part routines | `SoundingReport` |
+| `iter_decoded_reports(source, reference_time)` | the three above | `SoundingReport`, one at a time |
+| `merge_reports(reports, station_table)` | — | `MergedSounding` per station and time |
+
+A `SoundingReport` holds the part, the station, the day and hour, the wind unit, its levels
+(`SoundingLevel`, wind speeds always in m/s), the layers of missing data, the sounding system
+group and the regional sections as text. A report whose header cannot be decoded raises
+`DecodeError` in `parse_report` and is logged and skipped by the functions that read a stream.
+A `NIL` report comes back with `nil` set and no levels.
+
+The observation day and hour come from the report; the year and the month come from
+`reference_time` (when the report was received; now, if not given). Parts are merged when they
+share the station and the time rounded to 3 hours.
 
 ---
 
-## Handling Non-Standard and Extreme Meteorological Data
+## Decoding rules
 
-Real-world atmospheric soundings and teletype GTS transmissions frequently contain non-standard encodings, extreme conditions, and transmission artifacts. `fm35_decoder` handles them deterministically per WMO regulations:
+The level data is decoded as GEMPAK does. The rules that matter most in practice:
 
-- **Variable Wind Direction ($dd = 99$)**:
-  In WMO Code Table 0877, a wind direction reported as `99` indicates variable wind direction. The decoder sets `WindDir = np.nan` in `df_main` while preserving the numeric `WindSpeed`. Crucially, variable winds are excluded from trigonometric vector ($U/V$) decomposition so they do not distort the vertical wind field.
-- **5-Degree Directional Resolution ($fff \ge 500$)**:
-  In WMO FM 35, when the units digit of wind direction is $5^\circ$ (e.g., $275^\circ$), $500$ is added to the reported wind speed ($fff$) across both standard levels and maximum wind groups ($77P_mP_mP_m$). The decoder accurately separates the $5^\circ$ direction component from the true wind speed, avoiding the common $500\text{ kt}$ speed inflation bug.
-- **Calm Wind ($0^\circ, 0\text{ kt}$)**:
-  Calm wind is represented as `WindDir = 0.0, WindSpeed = 0.0`. True non-calm winds blowing from North are assigned `360.0°`.
-- **Wind Groups Follow $I_d$**:
-  The header's $I_d$ (Code Table 1734) names the last standard level that carries a wind group ($2$ covers $250$ and $200\text{ hPa}$, $1$ covers $150$ and $100\text{ hPa}$; tens of hPa in Part C). Levels above it are read as `PPhhh TTTDD` only, so the next group is never taken for their wind; with $I_d$ = `/` only the surface has a wind group.
-- **Temperatures That Look Like Indicators**:
-  $-66.x$ and $-77.x\,^\circ\text{C}$ (common at $150$ and $100\text{ hPa}$ in the tropics) are coded `66xxx` and `77xxx`, like the maximum wind indicators, and `21212` ($21.2\,^\circ\text{C}$) or `31313` ($-31.3\,^\circ\text{C}$) look like section markers. The group after `PPhhh` is read as the temperature by its position; only groups that cannot be a temperature and depression (`88999`, `77999`, `66999`, `41414`, `52525`, `54545`, `55555`, `56565`, `58585`) end a level early.
-- **Maximum Wind Shear**:
-  The cloud section (`41414`) belongs to Part B, so in Parts A and C a `41414` after a maximum wind is the shear group ($14\text{ kt}$ below and above).
-- **Wind Speed Units**:
-  `YY` is the day plus $50$ when speeds are in knots and the day itself when they are in m/s. m/s speeds are converted to knots in `df_main`; `df_special` keeps the reported value and unit (`240/23m/s`).
-- **Regional and National Sections**:
-  `51515`–`59595` and `61616`–`69696` come last in a part; the groups after them are never read as levels (`55555` stays a significant level in Parts B and D, `66666` a maximum wind at $666\text{ hPa}$).
-- **Part B Without Part A**:
-  A `TTBB` decodes on its own: the profile has no heights, which only Parts A and C report. A message with fewer than two temperatures (only the surface) raises `ValueError`.
-- **Part C Special Levels in Tenths of hPa**:
-  In `TTCC`, `88PtPtPt` and `77PmPmPm` give the pressure in tenths of a hectopascal (`88906` is $90.6\text{ hPa}$).
-- **Pressures Keep Their Tenths**:
-  Part D levels are reported in tenths of a hectopascal, and `df_main` keeps them (`70.7` and `70.0 hPa` stay two levels). Round for display in your own code.
-- **Repeated Sections**:
-  The `31313` and cloud sections repeat in every part and are listed once. Tropopause and maximum wind entries are all kept: a sounding may report two tropopauses (one in Part A, one in Part C). The `Part` column of `df_special` tells them apart.
-- **GTS Transmission Sequence Breaks**:
-  If network or teletype line noise drops an intermediate significant level in `TTBB` or `TTDD` (e.g., group sequence jumps directly from `22` to `44`), the decoder recovers automatically rather than terminating or discarding the remainder of the sounding.
-- **Negative Geopotential Heights ($1000\text{ hPa}$ below sea level)**:
-  When a $1000\text{ hPa}$ surface lies below sea level or below ground, WMO encodes it as $500 + |h|$. The decoder detects this offset and outputs true negative geopotential heights (e.g., `00520` $\implies -20\text{ gpm}$).
-- **Stratospheric Standard Levels ($P < 10\text{ hPa}$)**:
-  Soundings reaching the middle stratosphere in `TTCC` ($7, 5, 3, 2, 1\text{ hPa}$) are evaluated against extended standard atmosphere heights up to $47,800\text{ gpm}$.
-- **Physical Super-Saturation Prevention**:
-  Temperature inversions can cause vertical DewPoint interpolation to cross above Temperature. The decoder strictly enforces $T_d \le T$ ($\text{RH} \le 100\%$).
+- **Order of the code form.** Standard levels are expected in order (1000, 925, … 100 hPa; 70, 50,
+  … 1 hPa in Part C). After a group that is not the expected level, the decoder looks for the next
+  level that is itself followed by the level after it, and gives up after ten groups. Significant
+  levels are expected in the sequence of `nn`; one out of sequence is taken only if its pressure is
+  lower than the last, and dropped again if the next level does not follow it.
+- **`Id`** gives the last standard level with a wind group (hundreds of hPa in Part A, tens in
+  Part C; `/` for none). In Part C, `1` and `0` give every level a wind group.
+- **Heights** are restored by a fixed rule per level (`RU_HGHT`): `00515` is −15 m, `85570` is
+  1570 m, `70980` is 2980 m, `30970` is 9700 m, `20241` is 12410 m, `50064` in Part C is 20640 m.
+  A standard level without a height is not kept.
+- **Temperature**: negative when the last figure is odd. **Depression**: tenths up to 50, whole
+  degrees plus 50 above (51–55, which WMO does not use, are read as 1–5 °C).
+- **Wind**: `ddfff` with 500 added to `fff` for a direction ending in 5. 360° is given as 0°. A
+  direction above 360° (`99`, variable) gives no wind. Speeds follow `YY` (knots when 50 is added).
+- **Tropopause and maximum wind** (`88`, `77`, `66`) are numeric levels; their pressure is in
+  tenths of hPa in Part C. `88999` and `77999` mean none. A maximum wind without a wind is dropped.
+- **Levels without data** (a significant level whose temperature or wind is `/////`) are not kept.
+
+Two rules differ from GEMPAK, both about where a marker is recognised:
+
+1. `21212` opens the wind section of Parts B and D only where a level group is expected. After
+   `nnPPP` it is a temperature of 21.2 °C with a depression of 1.2 °C.
+2. `51515` after `PPhhh` is a temperature of −51.5 °C with a depression of 1.5 °C. Where a level
+   or a wind is expected it ends the level data.
+
+Added to what GEMPAK decodes (from the WMO Manual on Codes): the `31313` section (radiation
+correction, sounding system, tracking, launch time), the `41414` cloud group of Part B, the
+`4vbvbvava` shear group of a maximum wind, and layers of missing data (`nn/// /////`), which are
+listed and never interpolated across.
 
 ---
 
-## Meteorological Methodology
+## Merged profile
 
-### Vertical Interpolation
-- **Temperature & Dewpoint**: Missing intermediate levels are filled via linear interpolation with respect to the **natural logarithm of pressure** ($\ln P$), only between two observed levels: nothing is extrapolated above the last observation or below the first (a top level reported as `/////` stays empty). This aligns with atmospheric thermodynamics on Skew-T / Log-P diagrams where temperature varies approximately linearly with $\ln P$.
-- **Wind Vectors**: Wind speed and direction are decomposed into orthogonal **$U$ (zonal)** and **$V$ (meridional)** vector components. Each component is interpolated independently in $\ln P$ space (again only between observed winds) before being recombined, preventing boundary artifacts across the $0^\circ/360^\circ$ North transition. A variable wind keeps its speed and no direction.
+GEMPAK stores the parts unmerged, so the merge is this library's own:
 
-### Hypsometric Geopotential Calculation
-Missing geopotential heights are computed using the Hypsometric Equation:
-$$Z_2 - Z_1 = \frac{R_d \cdot \bar{T}_v}{g_0} \ln\left(\frac{P_1}{P_2}\right)$$
-The decoder incorporates **virtual temperature ($T_v$)** when moisture data is available, accounting for air density variations in warm and humid tropical boundary layers.
+- Levels are combined by pressure, to the tenth of hPa. Standard levels come first, then
+  significant temperature levels, significant winds, PILOT winds, tropopause and maximum wind; a
+  value already there is never replaced.
+- One report per part: the first received, unless a later one comes from a bulletin whose `BBB`
+  marks a correction, retransmission or amendment.
+- **Heights** of levels that report none are computed with the hypsometric equation and the
+  virtual temperature. Above the last temperature a height is computed only within the limits of
+  Regulation 35.2.2.4 (25 hPa, and a quarter of the pressure of the level). With a station table,
+  the surface takes the station elevation.
+- **Interpolation** (on request; on by default in `decode`) fills temperature and dew point
+  linearly in ln(p), and the wind by its components, only between observed levels and never inside
+  a layer reported as missing. The dew point never exceeds the temperature.
+- PILOT winds on heights get a pressure from the heights of the profile when they fall inside it.
 
-A level without a temperature takes one for this calculation only: interpolated in $\ln P$ between observed temperatures, and the top temperature above the last one. Above the last temperature a height is computed only within the limits of Regulation 35.2.2.4 (25 hPa, and a quarter of the level's pressure); further up a level keeps no height unless the report gives it. Under the same rule, a standard level just above the top of the sounding that the report does not hold is added with its geopotential only (`Source` = `Extrapolated`).
-
----
-
-## Performance & Architecture
-
-- **In-Memory WMO Code Tables**: Core WMO tables (3931, 0777, 2700, 0513, 1600, 0515, 0509, 3849, 3872, and Common Code Table C-2) are compiled directly into memory in `tables.py`, providing sub-microsecond table access with zero disk I/O overhead.
-- **NumPy Vectorization**: Hypsometric height integration and vector wind calculations leverage NumPy array operations for speed when batch-processing large archives of historical radiosonde soundings.
-
----
-
-## Output Data Structure
-
-### `df_main` (Vertical Profile)
-```
-  Pressure  Height  Temp  DewPoint  WindDir  WindSpeed
-    1000.0     163  20.4      18.0     10.0        8.0
-     938.0     714  21.2      18.8     10.0        8.0
-     925.0     843  20.0      18.1     75.0        6.0
-     882.0    1249  16.8      16.4     23.0        8.5
-     870.0    1366  19.8      13.8     15.0       10.0
-     850.0    1570  18.6      13.6    360.0        8.0
-       ...     ...   ...       ...      ...        ...
-      30.0   23800 -58.3     -91.3     85.0       35.0
-      20.0   26480 -55.2     -89.0     90.0       38.0
-      10.0   31020 -44.1       NaN     95.0       42.0
-```
-
-### `df_special` (Metadata & Special Levels)
-```
-    Symbol     Subject    Description                                    Value  Part
-         h       Cloud    Base Height                  600-1000m (2000-3300ft)  TTBB
-        Nh       Cloud         Amount                                  8 oktas  TTBB
-        CL       Cloud       Low Type  Stratus nebulosus and/or Stratus fractus  TTBB
-        CM       Cloud       Mid Type                             No CM clouds  TTBB
-        CH       Cloud      High Type                             No CH clouds  TTBB
-        sr  Solar/Inst     Solar Corr  Solar and infrared corrected automatically by radiosonde system  TTAA
-      rara  Solar/Inst     Sonde Type     Vaisala RS41/DigiCORA MW41 (Finland)  TTAA
-      sasa  Solar/Inst       Tracking            Automatic satellite navigation  TTAA
-     8GGgg  Solar/Inst           Time                                    11:31  TTAA
-    PtPtPt  Tropopause       Pressure                                  90.6hPa  TTCC
-    TtTtTt  Tropopause    Temperature                                   -77.1C  TTCC
-      DtDt  Tropopause       Dewpoint                                   -89.1C  TTCC
-  dtdtftft  Tropopause           Wind                                 260/18kt  TTCC
-    PmPmPm    Max Wind       Pressure                                   200hPa  TTAA
-dmdmfmfmfm    Max Wind           Wind                                275/120kt  TTAA
-      vbvb    Max Wind    Shear Below                                     14kt  TTAA
-      vava    Max Wind    Shear Above                                     14kt  TTAA
-```
+Every value computed here is named in `SoundingLevel.derived` (the `Derived` column).
 
 ---
 

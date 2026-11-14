@@ -1,7 +1,7 @@
 [project]
 name = "fm35_decoder"
-version = "1.2"
-description = "A Python tool to decode standard FM35 TEMP weather messages from upper-air observations."
+version = "2.0"
+description = "Decoder for WMO FM 35 TEMP and FM 32 PILOT upper-air reports, based on the GEMPAK upper-air decoder."
 readme = "README.md"
 requires-python = ">=3.12"
 classifiers = [
@@ -14,7 +14,6 @@ authors = [
 ]
 dependencies = [
     "pandas>=3.0.0",
-    "numpy>=2.0.0",
 ]
 
 [project.optional-dependencies]

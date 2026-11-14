@@ -4,7 +4,10 @@ Based on WMO Manual on Codes, WMO-No. 306, Volume I.1.
 All tables are precompiled as in-memory Python dictionaries for 0 ms lookup overhead.
 """
 
-from typing import Any, Dict
+import csv
+import functools
+import os
+from typing import Any, Dict, Optional
 
 # WMO Code Table 3931 - Ta: Approximate tenths of degree Celsius and its sign
 TABLE_T_3931: Dict[str, Dict[str, Any]] = {
@@ -342,32 +345,6 @@ TABLE_rara_3685: Dict[str, str] = {
     "//": "Radiosonde type missing",
 }
 
-# Standard Atmosphere reference geopotential heights (in meters)
-# Extended up to 1 hPa (mesosphere) based on US Standard Atmosphere 1976 / ICAO Standard Atmosphere
-STANDARD_ATMOSPHERE_HEIGHTS: Dict[int, int] = {
-    1000: 111,
-    925: 762,
-    850: 1457,
-    700: 3012,
-    500: 5574,
-    400: 7185,
-    300: 9164,
-    250: 10363,
-    200: 11784,
-    150: 13608,
-    100: 16180,
-    70: 18440,
-    50: 20580,
-    30: 23850,
-    20: 26500,
-    10: 31050,
-    7: 33500,
-    5: 35800,
-    3: 39500,
-    2: 42500,
-    1: 47800,
-}
-
 # Master code dictionary registry for decoder lookup
 WMO_TABLES: Dict[str, Any] = {
     "T_3931": TABLE_T_3931,
@@ -381,3 +358,33 @@ WMO_TABLES: Dict[str, Any] = {
     "sasa": TABLE_sasa_3872,
     "rara": TABLE_rara_3685,
 }
+
+
+_TABLE_FILES = {
+    "Nh": "Nh_2700.csv",
+    "CL": "CL_0513.csv",
+    "h": "h_1600.csv",
+    "CM": "CM_0515.csv",
+    "CH": "CH_0509.csv",
+    "Sr": "Sr_3849.csv",
+    "rara": "rara_3685.csv",
+    "sasa": "sasa_3872.csv",
+}
+
+
+@functools.lru_cache(maxsize=1)
+def load_wmo_tables(base_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    The WMO code tables used for the 31313 and 41414 sections. Without `base_path` these are
+    the built-in tables; with it, each table is read from its CSV file (columns Code and
+    Description) in that directory, and a table without a file keeps its built-in entries.
+    """
+    if base_path is None:
+        return WMO_TABLES
+    tables = dict(WMO_TABLES)
+    for key, filename in _TABLE_FILES.items():
+        path = os.path.join(base_path, filename)
+        if os.path.exists(path):
+            with open(path, newline="", encoding="utf-8") as handle:
+                tables[key] = {row["Code"]: row["Description"] for row in csv.DictReader(handle)}
+    return tables
