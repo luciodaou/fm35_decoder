@@ -10,7 +10,8 @@ The decoding methodology implemented in this library adheres strictly to:
 
 - **WMO-No. 306, Volume I.1, Part A (Alphanumeric Codes)**:
   - **Code Form FM 35-XII TEMP**: *Upper-air report from land station*.
-  - FM 36 TEMP SHIP and FM 38 TEMP MOBIL share the code form but identify the station with position groups (`99LaLaLa QcLoLoLoLo ...`), which this decoder does not read.
+  - FM 36 TEMP SHIP (`UUAA`…) and FM 37 TEMP DROP (`XXAA`, `XXBB`) share the code form and identify the platform with position groups (`99LaLaLa QcLoLoLoLo MMMULaULo`), which are decoded. FM 32 PILOT (`PPAA`…) is decoded too.
+- **Unidata GEMPAK**, `gempak/source/bridge/ru`: the decoding of the level data follows its routines, named in this document where a rule comes from them.
 - **WMO Code Tables**:
   - **Code Table 3931** ($T_a$): *Approximate tenths of degrees Celsius and its sign*.
   - **Code Table 0777** ($D_a D_a$ / $2D_a$): *Dew-point depression ($\Delta T = T - T_d$)*.
@@ -55,29 +56,54 @@ A complete radiosonde sounding is divided into four distinct parts:
 ### 4.1 Header Group: `TTAA YYGGId IIiii`
 - `TTAA`: Part identifier (`TTAA`, `TTBB`, `TTCC`, or `TTDD`).
 - `YYGGId`:
-  - `YY`: Day of the month (with 50 added if wind speed is reported in knots; e.g., day 23 reported in knots becomes `73`). Without the 50, speeds are in m/s: the decoder converts them to knots in `df_main`.
+  - `YY`: Day of the month (with 50 added if wind speed is reported in knots; e.g., day 23 reported in knots becomes `73`). Without the 50, speeds are in m/s. The decoder keeps all speeds in m/s in its data model; `df_main` gives knots unless m/s is asked for.
   - `GG`: Observation hour UTC (e.g., `12` = 12:00 UTC, `00` = 00:00 UTC).
-  - `Id` (Code Table 1734): the last standard level that carries a wind group, in hundreds of hPa in Part A (`1` = 100, `2` = 200, …, `8` = 850, `9` = 925, `0` = 1000) and tens of hPa in Part C (`1` = 10, `2` = 20, `3` = 30, `5` = 50, `7` = 70). Every level at or below it has a wind group (`/////` when missing); `2` also covers 250 hPa and `1` also covers 150 hPa. Levels above it have no wind group. `/` means no wind at any standard level: only the surface keeps its wind group.
+  - `Id` (Code Table 1734): the last standard level that carries a wind group, in hundreds of hPa in Part A (`1` = 100, `2` = 200, …, `8` = 850, `9` = 925, `0` = 1000) and tens of hPa in Part C (`1` = 10, `2` = 20, `3` = 30, `5` = 50, `7` = 70). Every level at or below it has a wind group (`/////` when missing); `2` also covers 250 hPa and `1` also covers 150 hPa. Levels above it have no wind group. `/` means no wind at any standard level: only the surface keeps its wind group. Following GEMPAK, in Part C the figures `1` and `0` give every level a wind group.
   - In Parts B and D the last figure is `a4` (type of measuring equipment) and may be `/`.
 - `IIiii`: WMO Station Identifier (e.g., `83779` for São Paulo, Brazil).
 
-### 4.2 Surface Level Group: `99PPP TTTDD dddff`
+### 4.2 Surface Level Group: `99PPP TTTDD ddfff`
 - `99`: Indicator for station surface level.
 - `PPP`: Surface atmospheric pressure in whole hectopascals (hPa).
   - If $PPP < 100$ (e.g., `99021`), the pressure is $\ge 1000\text{ hPa}$ ($1021.0\text{ hPa}$).
   - If $PPP \ge 100$ (e.g., `99938`), the pressure is $< 1000\text{ hPa}$ ($938.0\text{ hPa}$).
 - `TTT`: Surface air temperature (see Section 4.4).
 - `DD`: Surface dew-point depression (see Section 4.5).
-- `dddff`: Surface wind direction and speed (see Section 4.6).
+- `ddfff`: Surface wind direction and speed (see Section 4.6).
 
-### 4.3 Mandatory Standard Isobaric Levels: `PPhhh TTTDD dddff`
+### 4.3 Mandatory Standard Isobaric Levels: `PPhhh TTTDD ddfff`
 - `PP`: Standard pressure level indicator:
   - `00` = $1000\text{ hPa}$, `92` = $925\text{ hPa}$, `85` = $850\text{ hPa}$, `70` = $700\text{ hPa}$, `50` = $500\text{ hPa}$, `40` = $400\text{ hPa}$, `30` = $300\text{ hPa}$, `25` = $250\text{ hPa}$, `20` = $200\text{ hPa}$, `15` = $150\text{ hPa}$, `10` = $100\text{ hPa}$.
   - In Part C (`TTCC`): `70` = $70\text{ hPa}$, `50` = $50\text{ hPa}$, `30` = $30\text{ hPa}$, `20` = $20\text{ hPa}$, `10` = $10\text{ hPa}$, `07` = $7\text{ hPa}$, `05` = $5\text{ hPa}$, `03` = $3\text{ hPa}$, `02` = $2\text{ hPa}$, `01` = $1\text{ hPa}$.
 - `hhh`: Geopotential height of the pressure surface.
   - **For $P > 500\text{ hPa}$** (e.g., $1000, 925, 850, 700\text{ hPa}$): Reported in **whole standard geopotential meters**. Thousands digits are omitted. For example, $850\text{ hPa}$ coded as `85570` represents $1570\text{ gpm}$.
   - **For $P \le 500\text{ hPa}$** (e.g., $500, 400, 300, 200, 100\text{ hPa}$): Reported in **tens of geopotential meters (decameters, dam)**. For example, $500\text{ hPa}$ coded as `50591` represents $591\text{ dam} = 5910\text{ gpm}$.
-  - **Sub-zero / Below-sea-level heights**: At $1000\text{ hPa}$, if the surface is below sea level or the pressure surface lies below ground, 500 is added to the absolute value ($500 + |h|$). A reported `00520` indicates $-20\text{ gpm}$.
+  - **Restoring the omitted figures** (GEMPAK `RU_HGHT`):
+
+    | Level | Rule | Example |
+    | :--- | :--- | :--- |
+    | 1000 hPa | above 500: `500 − hhh` (below sea level) | `00515` → −15 m |
+    | 925 hPa | below 200: `+1000` | `92150` → 1150 m |
+    | 850 hPa | below 900: `+1000` | `85570` → 1570 m |
+    | 700 hPa | below 500: `+3000`, else `+2000` | `70207` → 3207 m, `70980` → 2980 m |
+    | 500, 400 hPa | decametres | `50591` → 5910 m |
+    | 300 hPa | decametres; under 3000 m: `+10000` | `30970` → 9700 m |
+    | 250 hPa | decametres; under 5000 m: `+10000` | `25095` → 10950 m |
+    | 200 hPa | decametres; under 7000 m: `+10000` | `20241` → 12410 m |
+    | 150, 100 hPa | decametres `+10000` | `10658` → 16580 m |
+    | 70 hPa | decametres `+10000` | `70865` → 18650 m |
+    | 50 hPa | from 8000 m: `+10000`, else `+20000` | `50064` → 20640 m |
+    | 30, 20 hPa | decametres `+20000` | `20648` → 26480 m |
+    | 10 hPa | above 8000 m: `+20000`, else `+30000` | `10102` → 31020 m |
+    | 7, 5, 3 hPa | decametres `+30000` | `07350` → 33500 m |
+    | 2 hPa | above 8000 m: `+30000`, else `+40000` | `02250` → 42500 m |
+    | 1 hPa | decametres `+40000` | `01780` → 47800 m |
+
+  - A standard level whose height is `///` is not kept. A height of zero metres in the last three
+    figures with everything else missing (`70000 ///// /////`) counts as no height.
+- **Order.** The levels are expected in the order of the code form. A group that is not the
+  expected level starts a search for the next level that is followed, where its own groups end,
+  by the level after it (GEMPAK `RU_MLVL`); 925 hPa may be absent.
 
 ### 4.4 Temperature Group: `TTT` (WMO Code Table 3931)
 The 3-digit group `TTT` represents dry-bulb temperature in degrees Celsius:
@@ -92,15 +118,15 @@ The 3-digit group `TTT` represents dry-bulb temperature in degrees Celsius:
 The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 - **Codes `00` through `50`**: Depression from $0.0^\circ\text{C}$ to $5.0^\circ\text{C}$ in tenths of a degree ($DD / 10.0$).
   - *Example*: `24` $\implies \Delta T = 2.4^\circ\text{C}$. Dewpoint $T_d = 21.2 - 2.4 = 18.8^\circ\text{C}$.
-- **Codes `56` through `99`**: Depression from $6^\circ\text{C}$ to $49^\circ\text{C}$ in whole degrees ($DD - 50$).
+- **Codes `56` through `99`**: Depression from $6^\circ\text{C}$ to $49^\circ\text{C}$ in whole degrees ($DD - 50$). Codes `51`–`55` are not used by WMO; following GEMPAK they are read the same way ($1$ to $5^\circ\text{C}$).
   - *Example*: `65` $\implies \Delta T = 65 - 50 = 15^\circ\text{C}$.
   - `99` indicates a depression of $49^\circ\text{C}$ or more (extremely dry air).
 - **Code `//`**: Moisture sensor frozen or missing.
 
 ### 4.6 Wind Group: `ddfff` (WMO Regulations 35.2.4.4 & 12.3.4.1)
 - `dd`: Wind direction in tens of degrees ($01 = 10^\circ, 36 = 360^\circ$).
-  - `00`: Calm wind ($fff = 000$).
-  - `99`: **Variable wind**. Direction is marked as `NaN` in `df_main` while speed is preserved.
+  - `36` (north) is given as $0^\circ$, as GEMPAK does; `00000` is calm ($0^\circ$, speed 0).
+  - `99` (**variable wind**), and any direction above $360^\circ$, gives no wind: neither direction nor speed is kept.
 - `fff`: Wind speed in knots.
   - **The 5-Degree Rule**: WMO encodes the $5^\circ$ unit digit of wind direction by adding $500$ to the wind speed $fff$.
   - *Case A ($fff < 500$)*: Units digit of direction is $0$. Direction is $dd \times 10$, speed is $fff$.
@@ -110,15 +136,17 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 ### 4.7 Significant Levels: `nnPPP TTTDD` (Part B & Part D)
 - `nn`: Repeating sequence counter ($00, 11, 22, 33, \dots, 99, 11, 22\dots$).
   - `00` represents the surface level.
+  - `nn` is expected in sequence (GEMPAK `RU_STMP`, `RU_PWND`). A level out of sequence is taken only if its pressure is lower than the last one, and is dropped again if the level after it does not follow it. A level whose temperature (or wind) is missing is not kept.
+- `21212` opens the significant winds (`nnPPP ddfff`). It is recognised only where a level group is expected: after `nnPPP` it is a temperature ($21.2^\circ\text{C}$, depression $1.2^\circ\text{C}$).
 - `PPP`: Pressure of the significant level.
-  - In **Part B (`TTBB`)**: Reported in whole hectopascals (hPa).
+  - In **Part B (`TTBB`)**: Reported in whole hectopascals (hPa); a value under 100 is 1000 hPa and more (`017` = 1017 hPa).
   - In **Part D (`TTDD`)**: Reported in **tenths of a hectopascal (hPa)**. For example, `11906` represents significant level 1 at $90.6\text{ hPa}$.
 
 ### 4.8 Tropopause Group: `88PtPtPt TtTtTt dtdtftft`
 - `88`: Tropopause indicator group (`88999` indicates no tropopause was observed).
 - `PtPtPt`: Pressure of the tropopause level, in whole hPa in Part A and **tenths of hPa** in Part C (`88906` = 90.6 hPa). A sounding may report a tropopause in each part.
 - `TtTtTt`: Temperature and dew-point depression at the tropopause.
-- `dtdtftft`: Wind direction and speed at the tropopause.
+- `dtdtftft`: Wind direction and speed at the tropopause (a wind of $0^\circ$ and speed 0 is taken as missing, as in GEMPAK).
 
 ### 4.9 Maximum Wind Level: `77PmPmPm dmdmfmfmfm 4vbvbvava`
 - `77` (or `66`): Maximum wind indicator group (`77999` indicates maximum wind was not determined).
@@ -150,8 +178,9 @@ The 2-digit group `DD` represents the dew-point depression $\Delta T = T - T_d$:
 ### 5.1 Vertical Interpolation in $\ln(P)$ Space
 Atmospheric pressure decreases exponentially with height in accordance with the barometric equation ($P(z) = P_0 e^{-z / H}$). On thermodynamic charts such as the **Skew-T / Log-P** diagram:
 - Temperature and dewpoint vary approximately linearly with the **natural logarithm of pressure** ($\ln P$).
-- Missing intermediate levels in `df_main` are interpolated with respect to $\ln P$, preventing artificial distortions caused by linear interpolation in Cartesian pressure space. Only gaps between two observed levels are filled; values are never extrapolated above the last observation.
+- On request (`interpolate`, on by default in `decode`), values missing at a level are interpolated with respect to $\ln P$, preventing artificial distortions caused by linear interpolation in Cartesian pressure space. Only gaps between two observed levels are filled; values are never extrapolated above the last observation.
 - A layer reported as missing in Part B or D (`nn/// /////` between its two boundary levels, Regulations 35.3.1.6 and 35.3.2.2) is not filled: levels inside it keep no temperature (or wind), and the layer is listed in `df_special` under the subject `Missing Data`.
+- A dew point is interpolated only where the temperature is. Every interpolated or computed value is named in the `Derived` column.
 
 ### 5.2 Vector Wind Interpolation
 Interpolating wind direction and speed directly as scalar numbers creates severe mathematical artifacts (e.g., averaging $350^\circ$ and $10^\circ$ scalar numbers produces $180^\circ$ South wind instead of $360^\circ$ North wind).
@@ -159,7 +188,7 @@ This decoder converts wind vectors into zonal ($U$) and meridional ($V$) compone
 $$u = -S \cdot \sin(\theta), \quad v = -S \cdot \cos(\theta)$$
 Each vector component ($u, v$) is interpolated independently in $\ln P$ space and recombined:
 $$S = \sqrt{u^2 + v^2}, \quad \theta = \left(270^\circ - \text{atan2}(v, u)\right) \pmod{360^\circ}$$
-Non-calm North winds ($0.0^\circ$) are mapped to the meteorological standard of $360.0^\circ$.
+North is $0^\circ$, as for reported winds.
 
 ### 5.3 Physical Moisture Constraint
 Because temperature and dewpoint are interpolated independently, temperature inversions can occasionally produce non-physical mathematical artifacts where $T_d > T$ (super-saturation, $\text{RH} > 100\%$). The decoder enforces the physical boundary:
@@ -174,5 +203,18 @@ Where:
 - $\bar{T}_v$ is the mean **virtual temperature** of the layer, calculated from dry temperature and water vapor mixing ratio ($w$):
   $$T_v = T \cdot (1 + 0.608 \cdot w)$$
 
-A level without a temperature takes one for this calculation only: interpolated in $\ln P$ between observed temperatures, and the top temperature above the last one. Above the last temperature a height is computed only within the limits of Regulation 35.2.2.4 (25 hPa, and a quarter of the level's pressure); further up a level keeps no height unless the report gives it. Under the same rule, a standard level just above the top of the sounding that the report does not hold is added with its geopotential only (`Source` = `Extrapolated`).
+A level without a temperature takes one for this calculation only: interpolated in $\ln P$ between observed temperatures, and the top temperature above the last one. Above the last temperature a height is computed only within the limits of Regulation 35.2.2.4 (25 hPa, and a quarter of the level's pressure); further up a level keeps no height unless the report gives it. No level is added that the report does not hold.
   Accounting for moisture via virtual temperature corrects for air density, preventing 20–50 meter thickness errors in warm, humid lower atmospheres.
+
+---
+
+## 6. PILOT Reports (FM 32)
+
+| Part | Groups | Decoded as |
+| :--- | :--- | :--- |
+| `PPAA`, `PPCC` | `44nPP` (or `55nPP`) followed by `n` wind groups: the `n` consecutive standard levels from `PP` | winds on standard levels |
+| `PPBB`, `PPDD` | `9tnu1u2u3` followed by up to three wind groups: heights of `tn·10 + u` thousand feet (`1tn…` from 100000 ft) | winds on heights, in metres |
+| `PPBB`, `PPDD` after `21212` | `nnPPP ddfff` | winds on pressure levels |
+
+In a merged sounding, winds on heights get a pressure from the heights of the profile when they
+fall inside it.
