@@ -53,4 +53,11 @@ SBCT_TTAA = (
     "42308 82330="
 )
 
+# Macapa (82099), 6 October 2026 12 UTC: in Part C 88999 is a tropopause at 99.9 hPa (Part D
+# starts with the same level, 11999 81747), followed by a second one at 32.4 hPa
+SBMQ_TTCC = (
+    "TTCC 56123 82099 70872 72965 17030 50075 63376 25027 30396 56980 25523 20656 ///// 88999 "
+    "81747 35027 88324 57979 22536 77999 31313 42308 81131="
+)
+
 KT = 1852.0 / 3600.0

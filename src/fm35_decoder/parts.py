@@ -2,19 +2,28 @@
 Decoding of the parts of TEMP and PILOT reports, ported from the GEMPAK RU library
 (gempak/source/bridge/ru). Each function names the Fortran routine it follows.
 
-Four things differ from GEMPAK on purpose (MALFORMED_REPORTS.md has the reports behind the
-last two). The first two are about where a marker is recognised:
+Eight things differ from GEMPAK on purpose (MALFORMED_REPORTS.md has the reports behind the
+last six). The first two are about where a marker is recognised:
 
 1. 21212 starts the wind section of Parts B and D only where a level group is expected.
    GEMPAK cuts the report at the first "21212" it finds, so a level at 21.2 C with a
    depression of 1.2 C turned the temperature levels after it into winds.
 2. 51515 in the temperature position of a standard level is a temperature (-51.5 C with a
    depression of 1.5 C); GEMPAK ended the report there.
-3. 00500 is a height of 0 m at 1000 hPa (groups.decode_height), kept even with no temperature
-   and no wind; GEMPAK made it 500 m.
+3. 00500 is a height of 0 m at 1000 hPa (groups.decode_height); GEMPAK made it 500 m.
 4. 66, 77 or 88 where the wind of a standard level or of a tropopause is expected is the
    indicator of the next group, not a wind: the wind group was left out. GEMPAK read it as a
    wind and lost the tropopause or maximum wind.
+5. 88999 in Part C is a tropopause at 99.9 hPa when a temperature and a wind group follow it;
+   GEMPAK always took it for "no tropopause" and lost that one and any after it.
+6. A standard level with nothing but a height is dropped only when the height is coded 000.
+   GEMPAK dropped every height that is a multiple of 1000 m (30400 in Part C, 24000 m).
+7. 00PPP where the surface group 99PPP is expected is the surface when Id gives the standard
+   levels no wind and a temperature, a wind and the end of the levels follow. GEMPAK read a
+   1000 hPa level (00986: 486 m below sea level).
+8. 100 hPa in Parts C and D: the first level of a section of Part D coded 100, when the level
+   after it is above 10.0 hPa, and the first tropopause of Part C coded 88100. GEMPAK read
+   10.0 hPa.
 
 The shear group of a maximum wind (4vbvbvava) and the layers of missing data (nn/// /////) are
 recorded in addition; GEMPAK skips both. A layer marker counts in the sequence of nn.
@@ -68,6 +77,10 @@ _PRES = (
 # indicator of a tropopause or maximum wind group
 _NOT_A_WIND = ("66", "77", "88")
 
+_TEMP_GROUP = re.compile(r"^\d{3}[\d/]{2}$")
+_WIND_GROUP = re.compile(r"^(([0-2]\d|3[0-6]|99)\d{3}|/////)$")
+_SECTION_MARKERS = ("21212", "31313", "41414", "51515", "61616")
+
 _SHEAR = re.compile(r"^4[0-9/]{4}$")
 _MISSING_LAYER = re.compile(r"^(\d)\1///$")
 
@@ -88,7 +101,23 @@ def _top_wind_pressure(itopwn: Optional[int], above: bool) -> float:
     return 0.0 if above else 1000.0
 
 
-def _surface(fields: Fields, knots: bool) -> Optional[SoundingLevel]:
+def _surface_coded_00(fields: Fields) -> bool:
+    """
+    Deviation 7: whether the 00PPP just read where 99PPP is expected is the surface, coded as
+    in Part B. It is when Id gives the standard levels no wind and a temperature, a wind and
+    the end of the levels follow: a 1000 hPa level would have no wind group.
+    """
+    ahead = Fields(fields.text, fields.pos)
+    ahead.end = fields.end
+    temp, wind, after = ahead.next(), ahead.next(), ahead.next()
+    if temp is None or wind is None or temp in _SECTION_MARKERS or wind in _SECTION_MARKERS:
+        return False
+    if not _TEMP_GROUP.match(temp) or not _WIND_GROUP.match(wind):
+        return False
+    return after is None or after[:2] in _NOT_A_WIND or after in _SECTION_MARKERS
+
+
+def _surface(fields: Fields, knots: bool, itopwn: Optional[int] = 0) -> Optional[SoundingLevel]:
     """RU_MSFC: 99PPP TTTDD ddfff, the first groups of Part A."""
     saved = fields.pos
     fld = fields.next()
@@ -96,7 +125,8 @@ def _surface(fields: Fields, knots: bool) -> Optional[SoundingLevel]:
         fields.finish()
         return None
     assert fld is not None
-    pres = to_int(fld[2:5]) if fld[:2] == "99" and len(fld) >= 5 else None
+    is_surface = fld[:2] == "99" or (fld[:2] == "00" and itopwn is None and _surface_coded_00(fields))
+    pres = to_int(fld[2:5]) if is_surface and len(fld) >= 5 else None
     if pres is None:
         fields.pos = saved
         return None
@@ -154,12 +184,10 @@ def _mandatory(
         else:
             wdir, wspd = decode_wind(nxt, knots)
 
-    # A height of zero with everything else missing is no height. Deviation 3: 00500 is a
-    # height of 0 m that was reported, not a group left at zero.
-    if (
-        t is None and td is None and wdir is None and wspd is None
-        and z is not None and round(z) % 1000 == 0 and fld[:5] != "00500"
-    ):
+    # A height coded 000 with everything else missing is no height. Deviation 6: GEMPAK tests
+    # the restored height for a multiple of 1000 m, which also drops 00500 (0 m) and the
+    # heights in decametres that end in 00 (30400 in Part C is 24000 m).
+    if t is None and td is None and wdir is None and wspd is None and fld[2:5] == "000":
         z = None
     return (p, t, td, wdir, wspd, z), 0
 
@@ -239,10 +267,30 @@ def _mandatory_levels(
     return levels
 
 
+def _tropopause_at_999(fields: Fields) -> bool:
+    """
+    Deviation 5: whether the 88999 just read in Part C is a tropopause at 99.9 hPa, that is,
+    whether a temperature and a wind group follow it. A temperature that starts like an
+    indicator (77562 is -77.5 C, or a maximum wind at 56.2 hPa) is one only when 77999 comes
+    after its wind: a maximum wind is followed by its shear, another level or the end.
+    """
+    ahead = Fields(fields.text, fields.pos)
+    ahead.end = fields.end
+    temp, wind, after = ahead.next(), ahead.next(), ahead.next()
+    if temp is None or wind is None or temp in _SECTION_MARKERS or wind in _SECTION_MARKERS:
+        return False
+    if not _TEMP_GROUP.match(temp) or not (_WIND_GROUP.match(wind) or wind[:2] in _NOT_A_WIND):
+        return False
+    if temp[:2] in ("66", "77"):
+        return after == "77999"
+    return True
+
+
 def _tropopauses(fields: Fields, knots: bool, above: bool) -> List[SoundingLevel]:
     """
     RU_MTRP: 88PPP TTTDD ddfff, as many as there are; 88999 means none. PPP is in tenths of
-    hPa above 100 hPa. A wind of 0 degrees and 0 speed is taken as missing.
+    hPa above 100 hPa, where 88999 followed by its groups is a tropopause at 99.9 hPa. A wind
+    of 0 degrees and 0 speed is taken as missing.
     """
     levels: List[SoundingLevel] = []
     while True:
@@ -257,14 +305,18 @@ def _tropopauses(fields: Fields, knots: bool, above: bool) -> List[SoundingLevel
         assert fld is not None
         if fld[:2] != "88":
             continue
-        if fld[2:] == "999":
+        if fld[2:] == "999" and not (above and _tropopause_at_999(fields)):
             return levels
         # RU_MAND reads the group as a level below 100 hPa: its "height" is PPP
         (p, t, td, wdir, wspd, z), _ = _mandatory(fld, fields, knots, 0.0, False, False)
         if p is not None and z is not None:
             if wdir == 0.0 and wspd == 0.0:
                 wdir = wspd = None
-            levels.append(SoundingLevel(LevelType.TROPOPAUSE, z / 10.0 if above else z, None, t, td, wdir, wspd))
+            pres = z / 10.0 if above else z
+            if above and fld[:5] == "88100" and not levels:
+                # Deviation 8: the first tropopause of Part C coded 100 is at 100 hPa
+                pres = 100.0
+            levels.append(SoundingLevel(LevelType.TROPOPAUSE, pres, None, t, td, wdir, wspd))
 
 
 def _shear(fld: str, knots: bool) -> Tuple[Optional[float], Optional[float]]:
@@ -309,6 +361,22 @@ def _max_winds(fields: Fields, knots: bool, above: bool) -> List[SoundingLevel]:
         else:
             fields.pos = saved
         levels.append(level)
+
+
+def _is_100hpa(fields: Fields) -> bool:
+    """
+    Deviation 8: whether the first level of a section of Part D, coded 100 and just read, is
+    100 hPa and not 10.0 hPa. It is when the level after it has a higher pressure than
+    10.0 hPa: 100 hPa belongs to Part B and cannot be coded in tenths.
+    """
+    ahead = Fields(fields.text, fields.pos)
+    ahead.end = fields.end
+    ahead.next()
+    nxt = ahead.next()
+    if nxt is None or len(nxt) < 5:
+        return False
+    _, pres = decode_sig_level(nxt, True)
+    return pres is not None and pres > 10.0
 
 
 def _significant(
@@ -364,6 +432,8 @@ def _significant(
             continue
 
         level, pres = decode_sig_level(fld, above)
+        if above and nlev == 0 and fld[2:5] == "100" and _is_100hpa(fields):
+            pres = 100.0
         if level == levexp:
             get = True
             skip = False
@@ -553,7 +623,7 @@ def parse_report(
 
     if part in (ReportPart.TTAA, ReportPart.TTCC):
         if part is ReportPart.TTAA:
-            surface = _surface(fields, knots)
+            surface = _surface(fields, knots, report.top_wind_indicator)
             if surface is not None:
                 levels.append(surface)
         levels += _mandatory_levels(fields, knots, report.top_wind_indicator, above, drop)

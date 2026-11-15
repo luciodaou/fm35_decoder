@@ -5,7 +5,7 @@ import pytest
 from fm35_decoder import LevelType, MissingLayer, ReportPart, SoundingSystem, parse_report
 from fm35_decoder.groups import FT_TO_M
 
-from samples import KT, SBBV_TTAA, SBCT_TTAA, SBGL_TTAA, SBGL_TTBB, SBGL_TTCC, SBGL_TTDD, TTAA_CG
+from samples import KT, SBBV_TTAA, SBCT_TTAA, SBMQ_TTCC, SBGL_TTAA, SBGL_TTBB, SBGL_TTCC, SBGL_TTDD, TTAA_CG
 
 
 def pressures(report, *types):
@@ -246,6 +246,43 @@ def test_part_c_special_pressures_in_tenths():
     )
     assert pressures(report, LevelType.TROPOPAUSE) == [86.0]
     assert pressures(report, LevelType.MAX_WIND) == [65.0]
+
+
+def test_part_c_88999_with_its_groups_is_a_tropopause_at_99_9hpa():
+    report = parse_report(SBMQ_TTCC)
+    first, second = report.of_type(LevelType.TROPOPAUSE)
+    assert (first.pressure_hpa, first.temp_c, first.dewpoint_c) == (99.9, -81.7, -86.4)
+    assert (first.wind_dir_deg, first.wind_speed_ms) == (350.0, pytest.approx(27 * KT))
+    assert (second.pressure_hpa, second.temp_c, second.wind_dir_deg) == (32.4, -57.9, 225.0)
+    assert report.of_type(LevelType.MAX_WIND) == []
+    assert pressures(report, LevelType.MANDATORY) == [70.0, 50.0, 30.0, 20.0]
+
+
+@pytest.mark.parametrize(
+    "groups, tropopauses, max_winds",
+    [
+        ("88999 77999", [], []),
+        ("88999", [], []),
+        ("88999 77925 30075 42438", [], [92.5]),  # a maximum wind and its shear
+        ("88999 66192 27067 418//", [], [19.2]),
+        ("88999 77925 30075 77300 27050", [], [92.5, 30.0]),
+        ("88999 77562 35027 77999", [99.9], []),  # -77.5 C, not a maximum wind at 56.2 hPa
+        ("88999 81747 77999", [99.9], []),  # tropopause without its wind group
+        ("88999 81747 35027 77925 30075", [99.9], [92.5]),
+        ("88999 88324 57979 22536 77999", [], []),
+    ],
+)
+def test_part_c_88999_alone_means_no_tropopause(groups, tropopauses, max_winds):
+    text = SBMQ_TTCC.replace("88999 81747 35027 88324 57979 22536 77999", groups)
+    report = parse_report(text)
+    assert pressures(report, LevelType.TROPOPAUSE) == tropopauses
+    assert pressures(report, LevelType.MAX_WIND) == max_winds
+    assert report.sounding_system is not None
+
+
+def test_part_a_88999_is_never_a_tropopause():
+    report = parse_report(TTAA_CG.replace("88999 77146 24083 43131", "88999 81747 35027 77999"))
+    assert report.of_type(LevelType.TROPOPAUSE) == []
 
 
 def test_part_c_id_1_and_0_give_every_level_a_wind():

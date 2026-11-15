@@ -111,18 +111,28 @@ The level data is decoded as GEMPAK does. The rules that matter most in practice
   tenths of hPa in Part C. `88999` and `77999` mean none. A maximum wind without a wind is dropped.
 - **Levels without data** (a significant level whose temperature or wind is `/////`) are not kept.
 
-Four rules differ from GEMPAK. The first two are about where a marker is recognised; the last
-two come from real reports, described in [MALFORMED_REPORTS.md](MALFORMED_REPORTS.md):
+Eight rules differ from GEMPAK. The first two are about where a marker is recognised; the last
+six come from real reports, described in [MALFORMED_REPORTS.md](MALFORMED_REPORTS.md):
 
 1. `21212` opens the wind section of Parts B and D only where a level group is expected. After
    `nnPPP` it is a temperature of 21.2 °C with a depression of 1.2 °C.
 2. `51515` after `PPhhh` is a temperature of −51.5 °C with a depression of 1.5 °C. Where a level
    or a wind is expected it ends the level data.
-3. `00500` at 1000 hPa is 0 m (GEMPAK: 500 m), and the level is kept even when its temperature
-   and wind are missing. `00000 ///// /////` is still no height.
+3. `00500` at 1000 hPa is 0 m (GEMPAK: 500 m).
 4. `66`, `77` or `88` where the wind of a standard level or of a tropopause is expected is the
    indicator of the next group: the wind group was left out, and the tropopause or maximum wind
    that follows is still decoded.
+5. `88999` in Part C is a tropopause at 99.9 hPa when a temperature and a wind group follow it
+   (`88999 81747 35027`); followed by `77999`, a maximum wind or the end it means none. In
+   Part A it always means none.
+6. A standard level with a height and nothing else is kept, unless the height is coded `000`
+   (`00000 ///// /////`). GEMPAK drops every such height that is a multiple of 1000 m, so
+   `00500 ///// /////` (0 m) and `30400 /////` in Part C (24000 m) were lost.
+7. `00PPP` in the place of the surface group `99PPP` is the surface when `Id` is `/` and only a
+   temperature and a wind follow before the end of the levels.
+8. 100 hPa in Parts C and D, which code pressures in tenths: the first level of Part D coded
+   `100` is 100 hPa when the level after it is above 10.0 hPa, and so is a first tropopause
+   coded `88100` in Part C.
 
 Added to what GEMPAK decodes (from the WMO Manual on Codes): the `31313` section (radiation
 correction, sounding system, tracking, launch time), the `41414` cloud group of Part B, the

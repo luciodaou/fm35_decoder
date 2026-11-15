@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.0.2 - 2026-11-15
+
+Found by decoding an archive of 3,361 Brazilian soundings and checking every part against a
+plain reading of its groups. 44 soundings decode differently from 2.0.1; the cases are described
+in [MALFORMED_REPORTS.md](MALFORMED_REPORTS.md).
+
+### Fixed
+
+- **`88999` in Part C followed by its groups** is a tropopause at 99.9 hPa (pressures of Part C
+  are in tenths of hPa). 2.0.1 took every `88999` for "no tropopause" and lost that tropopause
+  and any after it: `88999 81747 35027 88324 57979 22536 77999` now gives 99.9 hPa, −81.7 °C and
+  32.4 hPa, −57.9 °C (SBMQ, 82099, 6 October 2026 12 UTC). `88999` followed by `77999`, by a
+  maximum wind or by the end of the level data still means none. 15 soundings.
+- **A standard level with a height and nothing else** is dropped only when the height is coded
+  `000`. 2.0.1 dropped every such height that is a multiple of 1000 m: `30400 /////` in Part C
+  is now 30 hPa at 24000 m (SBLO, 83768, 30 August 2026 12 UTC). 20 soundings.
+- **100 hPa coded `100` in Parts C and D** was read as 10.0 hPa, which put a level at about
+  −80 °C at 10 hPa in the merged profile. The first level of Part D coded `100` is 100 hPa when
+  the level after it is above 10.0 hPa (`11100 80557 22929 78159`), and so is a first tropopause
+  coded `88100` in Part C (SBCG, 83612, 31 August 2026 00 UTC). 7 soundings.
+- **Surface coded `00PPP` in Part A** (as in Part B) is the surface when `Id` is `/` and only a
+  temperature and a wind follow: `TTAA 5500/ 83362 00986 29256 33005 88999 77999=` gave a
+  1000 hPa level 486 m below sea level (SBCY, 83362, 5 November 2026 00 UTC). 3 soundings.
+
+### Tests
+
+- `tests/test_archive.py` and `tests/archive_samples.py`: 23 reports of the archive, with the
+  extreme values (158 kt, −88.5 °C, 1000 hPa at −264 m, 1,264 winds in one Part D) and the
+  rare or malformed forms, each decoded group by group.
+
 ## 2.0.1 - 2026-11-14
 
 Two reports that 2.0 decoded wrongly, both by a rule taken from GEMPAK: one valid report that
