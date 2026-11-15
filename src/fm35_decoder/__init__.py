@@ -23,7 +23,7 @@ from .models import (
 from .parts import parse_report
 from .stations import load_station_table
 
-__version__ = "2.0"
+__version__ = "2.0.1"
 
 __all__ = [
     "Bulletin",

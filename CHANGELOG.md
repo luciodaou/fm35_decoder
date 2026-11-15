@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1 - 2026-11-14
+
+Two reports that 2.0 decoded wrongly, both by a rule taken from GEMPAK: one valid report that
+was misread and one malformed report. They are described, with the other formatting errors the
+decoder recognises, in [MALFORMED_REPORTS.md](MALFORMED_REPORTS.md).
+
+### Fixed
+
+- **`00500` at 1000 hPa** is 0 m (2.0: 500 m), and `00500 ///// /////` is kept as a level with
+  that height (Boa Vista, 82022, 4 November 2026 00 UTC).
+- **A wind group left out before a tropopause or maximum wind group**: `66`, `77` or `88` in the
+  place of the wind of a standard level or of a tropopause is no longer read as a wind, so the
+  group that follows is decoded. `10663 ///// 88186 58750 24577` with `Id` = 1 gives the
+  tropopause at 186 hPa, −58.7 °C, which 2.0 lost (Curitiba, 83840, 13 November 2026 00 UTC).
+
 ## 2.0 - 2026-11-14
 
 The decoder is rebuilt on the upper-air decoder of Unidata GEMPAK (`dcuair` and the `RU` bridge

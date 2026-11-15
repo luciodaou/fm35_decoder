@@ -124,7 +124,8 @@ def decode_height(fld: str, above: bool, drop: bool = False) -> Tuple[Optional[f
     """
     RU_HGHT: PPhhh to (pressure in hPa, geopotential height in m). Up to 100 hPa PP is in tens
     of hPa and hhh in metres below 500 hPa, decametres from 500 hPa; above 100 hPa PP is in hPa
-    and hhh in decametres. The thousands (or ten thousands) are restored level by level.
+    and hhh in decametres. The thousands (or ten thousands) are restored level by level;
+    at 1000 hPa, 500 and more is a height below sea level (500 - hhh).
     """
     ipres = to_int(fld[0:2])
     if ipres is None:
@@ -141,7 +142,8 @@ def decode_height(fld: str, above: bool, drop: bool = False) -> Tuple[Optional[f
 
     z = float(iz)
     if not above:
-        if ipres == 1000 and iz > 500:
+        # GEMPAK tests iz > 500, which made 00500 (0 m) a height of 500 m
+        if ipres == 1000 and iz >= 500:
             z = 500.0 - z
         elif ipres == 925 and iz < 200 and not drop:
             z += 1000.0

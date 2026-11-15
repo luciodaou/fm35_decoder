@@ -2,13 +2,19 @@
 Decoding of the parts of TEMP and PILOT reports, ported from the GEMPAK RU library
 (gempak/source/bridge/ru). Each function names the Fortran routine it follows.
 
-Two things differ from GEMPAK on purpose, both about where a marker is recognised:
+Four things differ from GEMPAK on purpose (MALFORMED_REPORTS.md has the reports behind the
+last two). The first two are about where a marker is recognised:
 
 1. 21212 starts the wind section of Parts B and D only where a level group is expected.
    GEMPAK cuts the report at the first "21212" it finds, so a level at 21.2 C with a
    depression of 1.2 C turned the temperature levels after it into winds.
 2. 51515 in the temperature position of a standard level is a temperature (-51.5 C with a
    depression of 1.5 C); GEMPAK ended the report there.
+3. 00500 is a height of 0 m at 1000 hPa (groups.decode_height), kept even with no temperature
+   and no wind; GEMPAK made it 500 m.
+4. 66, 77 or 88 where the wind of a standard level or of a tropopause is expected is the
+   indicator of the next group, not a wind: the wind group was left out. GEMPAK read it as a
+   wind and lost the tropopause or maximum wind.
 
 The shear group of a maximum wind (4vbvbvava) and the layers of missing data (nn/// /////) are
 recorded in addition; GEMPAK skips both. A layer marker counts in the sequence of nn.
@@ -57,6 +63,10 @@ _PRES = (
     (1000.0, 925.0, 850.0, 700.0, 500.0, 400.0, 300.0, 250.0, 200.0, 150.0, 100.0),
     (70.0, 50.0, 30.0, 20.0, 10.0, 7.0, 5.0, 3.0, 2.0, 1.0, 0.0),
 )
+
+# No ddfff starts with these (dd is 00 to 36, or 99): in the place of a wind they are the
+# indicator of a tropopause or maximum wind group
+_NOT_A_WIND = ("66", "77", "88")
 
 _SHEAR = re.compile(r"^4[0-9/]{4}$")
 _MISSING_LAYER = re.compile(r"^(\d)\1///$")
@@ -131,16 +141,25 @@ def _mandatory(
     t, td = decode_temp(nxt)
 
     if p is not None and p >= topwnd:
+        saved = fields.pos
         nxt = fields.next()
         if fields.ends_report(nxt):
             return (p, t, td, wdir, wspd, z), -5
         assert nxt is not None
-        if not 5 <= len(nxt) <= 7:
+        if nxt[:2] in _NOT_A_WIND:
+            # Deviation 4: the wind group was left out; the indicator is read again
+            fields.pos = saved
+        elif not 5 <= len(nxt) <= 7:
             return (p, t, td, wdir, wspd, z), -3
-        wdir, wspd = decode_wind(nxt, knots)
+        else:
+            wdir, wspd = decode_wind(nxt, knots)
 
-    # A height of zero with everything else missing is no height
-    if t is None and td is None and wdir is None and wspd is None and z is not None and round(z) % 1000 == 0:
+    # A height of zero with everything else missing is no height. Deviation 3: 00500 is a
+    # height of 0 m that was reported, not a group left at zero.
+    if (
+        t is None and td is None and wdir is None and wspd is None
+        and z is not None and round(z) % 1000 == 0 and fld[:5] != "00500"
+    ):
         z = None
     return (p, t, td, wdir, wspd, z), 0
 

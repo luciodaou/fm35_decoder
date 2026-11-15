@@ -11,6 +11,8 @@ dropsonde forms, FM 36 and FM 37), based on the upper-air decoder of
 
 For a plain-English guide to the code form, see [TEMP_DECODING.md](TEMP_DECODING.md).
 Version 2.0 changes the decoding rules and part of the API: see [CHANGELOG.md](CHANGELOG.md).
+Reports that do not follow the code form, and what the decoder does with each, are listed in
+[MALFORMED_REPORTS.md](MALFORMED_REPORTS.md).
 
 ---
 
@@ -98,7 +100,7 @@ The level data is decoded as GEMPAK does. The rules that matter most in practice
   lower than the last, and dropped again if the next level does not follow it.
 - **`Id`** gives the last standard level with a wind group (hundreds of hPa in Part A, tens in
   Part C; `/` for none). In Part C, `1` and `0` give every level a wind group.
-- **Heights** are restored by a fixed rule per level (`RU_HGHT`): `00515` is −15 m, `85570` is
+- **Heights** are restored by a fixed rule per level (`RU_HGHT`): `00515` is −15 m, `00500` is 0 m, `85570` is
   1570 m, `70980` is 2980 m, `30970` is 9700 m, `20241` is 12410 m, `50064` in Part C is 20640 m.
   A standard level without a height is not kept.
 - **Temperature**: negative when the last figure is odd. **Depression**: tenths up to 50, whole
@@ -109,12 +111,18 @@ The level data is decoded as GEMPAK does. The rules that matter most in practice
   tenths of hPa in Part C. `88999` and `77999` mean none. A maximum wind without a wind is dropped.
 - **Levels without data** (a significant level whose temperature or wind is `/////`) are not kept.
 
-Two rules differ from GEMPAK, both about where a marker is recognised:
+Four rules differ from GEMPAK. The first two are about where a marker is recognised; the last
+two come from real reports, described in [MALFORMED_REPORTS.md](MALFORMED_REPORTS.md):
 
 1. `21212` opens the wind section of Parts B and D only where a level group is expected. After
    `nnPPP` it is a temperature of 21.2 °C with a depression of 1.2 °C.
 2. `51515` after `PPhhh` is a temperature of −51.5 °C with a depression of 1.5 °C. Where a level
    or a wind is expected it ends the level data.
+3. `00500` at 1000 hPa is 0 m (GEMPAK: 500 m), and the level is kept even when its temperature
+   and wind are missing. `00000 ///// /////` is still no height.
+4. `66`, `77` or `88` where the wind of a standard level or of a tropopause is expected is the
+   indicator of the next group: the wind group was left out, and the tropopause or maximum wind
+   that follows is still decoded.
 
 Added to what GEMPAK decodes (from the WMO Manual on Codes): the `31313` section (radiation
 correction, sounding system, tracking, launch time), the `41414` cloud group of Part B, the

@@ -5,7 +5,7 @@ import pytest
 from fm35_decoder import LevelType, MissingLayer, ReportPart, SoundingSystem, parse_report
 from fm35_decoder.groups import FT_TO_M
 
-from samples import KT, SBGL_TTAA, SBGL_TTBB, SBGL_TTCC, SBGL_TTDD, TTAA_CG
+from samples import KT, SBBV_TTAA, SBCT_TTAA, SBGL_TTAA, SBGL_TTBB, SBGL_TTCC, SBGL_TTDD, TTAA_CG
 
 
 def pressures(report, *types):
@@ -72,6 +72,37 @@ def test_temperatures_that_look_like_indicators():
 def test_underground_level_keeps_its_height_only():
     lvl = level(parse_report(TTAA_CG), 1000.0)
     assert (lvl.height_m, lvl.temp_c, lvl.wind_speed_ms) == (122.0, None, None)
+
+
+def test_00500_at_1000hpa_is_zero_metres():
+    """A reported height of 0 m is kept below the surface; 00000 with nothing else is no height."""
+    lvl = level(parse_report(SBBV_TTAA), 1000.0)
+    assert (lvl.height_m, lvl.temp_c, lvl.wind_speed_ms) == (0.0, None, None)
+    empty = parse_report(SBBV_TTAA.replace("00500", "00000"))
+    assert pressures(empty, LevelType.MANDATORY)[:2] == [925.0, 850.0]
+
+
+def test_tropopause_after_a_missing_wind_group():
+    """Id = 1 promises a wind at 100 hPa; 88186 in its place is the tropopause group."""
+    report = parse_report(SBCT_TTAA)
+    top = level(report, 100.0)
+    assert (top.height_m, top.temp_c, top.wind_dir_deg) == (16630.0, None, None)
+    (trop,) = report.of_type(LevelType.TROPOPAUSE)
+    assert (trop.pressure_hpa, trop.temp_c, trop.dewpoint_c) == (186.0, -58.7, -63.7)
+    assert (trop.wind_dir_deg, trop.wind_speed_ms) == (245.0, pytest.approx(77 * KT))
+    (maxw,) = report.of_type(LevelType.MAX_WIND)
+    assert (maxw.pressure_hpa, maxw.wind_dir_deg, maxw.wind_speed_ms) == (183.0, 245.0, pytest.approx(78 * KT))
+
+
+def test_maximum_wind_after_a_missing_wind_group():
+    """The same after a tropopause without a wind, and with no tropopause group at all."""
+    report = parse_report(SBCT_TTAA.replace("88186 58750 24577 77183", "88186 58750 77183"))
+    (trop,) = report.of_type(LevelType.TROPOPAUSE)
+    assert (trop.pressure_hpa, trop.temp_c, trop.wind_dir_deg) == (186.0, -58.7, None)
+    assert pressures(report, LevelType.MAX_WIND) == [183.0]
+    report = parse_report(SBCT_TTAA.replace("88186 58750 24577 ", ""))
+    assert report.of_type(LevelType.TROPOPAUSE) == []
+    assert pressures(report, LevelType.MAX_WIND) == [183.0]
 
 
 def test_wind_groups_follow_id():
